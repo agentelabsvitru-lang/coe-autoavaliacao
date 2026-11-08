@@ -17,6 +17,7 @@ const CONFIG_PADRAO = {
   ai_model: 'google/gemma-4-31b-it:free',
   ai_fallback: '',
   ai_mask: true,
+  ai_bloqueia: true,
   limits_enabled: true,
   limit_user: 5,
   limit_total: 50,
@@ -31,6 +32,33 @@ const CONFIG_PADRAO = {
     logos: { 1: false, 2: false }
   }
 };
+
+// Decisoes do CoE enviadas a IA em toda analise (o CoE edita em Orientacoes a IA)
+const ORIENTACOES_PADRAO = [
+  ['', 'Cores dos eventos de início (verde) e fim (vinho) e dos marcos (cinza) são o padrão do tema da Zeev: não aponte cor desses elementos.'],
+  ['R2, R3, 1.4', 'Responsável "Requisitante" em atividade de área é permitido em homologação (já conferido pela conferência automática AUTO-06): não aponte como não conformidade. O CoE sinaliza a troca antes da publicação.'],
+  ['1.3', 'A nomenclatura de atividade humana (ÁREA - Verbo + complemento) vale só para atividades humanas (retângulo com borda azul, listadas em tarefasHumanas). Evento de início, eventos de fim, marcos, gateways e temporizadores não seguem essa regra.'],
+  ['1.4', 'A atividade "Avaliar atendimento" (pesquisa de satisfação) é exceção aceita pelo CoE na seção 1.4: não aponte.'],
+  ['1.4', 'A regra do marco final "Abrir e Fechar Encerrado" está em validação no CoE: não marque como não conforme; use inconclusivo e descreva o ponto.'],
+  ['S17', 'O export da Zeev não mostra a ordem de exibição das opções de lista. Com o script padrão em uso, considere conforme; na dúvida, inconclusivo, nunca não conforme.'],
+  ['', 'O export da Zeev não traz o tempo dos temporizadores nem os destinatários dos e-mails. Ausência desses dados no contexto não é não conformidade: use inconclusivo.'],
+  ['3.7', 'Botões nativos "Enviar solicitação" (abertura) e "Concluir" são válidos para o histórico.'],
+  ['R5, R6', 'Por regra de negócio o SLA é em horas corridas; "horas úteis" desligado não é não conformidade.'],
+  ['3.6', 'O modelo administrativo da pesquisa de satisfação (seção 3.6) é padrão do CoE: seus campos, script e textos não devem ser apontados.']
+].map((o, i) => ({ id: 'o' + (i + 1), regras: o[0], texto: o[1], ativa: true, origem: 'Decisão inicial do CoE', em: '' }));
+
+// Colunas acrescentadas depois da primeira versao do banco (criadas sozinhas na primeira chamada)
+const COLUNAS_NOVAS = [['coe_status', "TEXT DEFAULT 'rascunho'"], ['submitted_at', 'TEXT'], ['reviewed_at', 'TEXT'], ['reviewer_id', 'INTEGER'], ['coe_opinion', 'TEXT']];
+let esquemaOk = false;
+async function garantirEsquema(env) {
+  if (esquemaOk) return;
+  const { results } = await env.DB.prepare('PRAGMA table_info(evaluations)').all();
+  const tem = new Set(results.map((c) => c.name));
+  for (const [nome, tipo] of COLUNAS_NOVAS) {
+    if (!tem.has(nome)) await env.DB.prepare(`ALTER TABLE evaluations ADD COLUMN ${nome} ${tipo}`).run();
+  }
+  esquemaOk = true;
+}
 
 /* ------------------------------ utilitarios ------------------------------ */
 const enc = new TextEncoder();
@@ -231,7 +259,10 @@ rota('POST', '/api/logout', null, async (c) => {
 rota('GET', '/api/me', 'user', async (c) => {
   const cfg = await lerConfig(c.env);
   const m = await c.env.DB.prepare("SELECT id, version, effective_date FROM manual_versions WHERE status = 'vigente' ORDER BY id DESC LIMIT 1").first();
-  return json({ user: c.user, uso: await usoHoje(c.env, c.user.id), limites: { ativo: cfg.limits_enabled, porAnalista: cfg.limit_user, total: cfg.limit_total }, manual: m || null });
+  let pendentesCoe = 0;
+  if (c.user.role === 'admin') pendentesCoe = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM evaluations WHERE coe_status = 'enviado'").first()).n;
+  return json({ user: c.user, uso: await usoHoje(c.env, c.user.id), limites: { ativo: cfg.limits_enabled, porAnalista: cfg.limit_user, total: cfg.limit_total },
+    iaBloqueia: cfg.ai_bloqueia !== false, manual: m || null, pendentesCoe });
 });
 
 // ---- convite / primeiro acesso ----
@@ -315,13 +346,13 @@ rota('GET', '/api/config', 'admin', async (c) => {
 rota('PUT', '/api/config', 'admin', async (c) => {
   const b = await corpo(c.req);
   const cfg = await lerConfig(c.env);
-  const campos = ['ai_provider', 'ai_url', 'ai_model', 'ai_fallback', 'ai_mask', 'limits_enabled', 'limit_user', 'limit_total'];
+  const campos = ['ai_provider', 'ai_url', 'ai_model', 'ai_fallback', 'ai_mask', 'ai_bloqueia', 'limits_enabled', 'limit_user', 'limit_total'];
   const mud = [];
   campos.forEach((k) => {
     if (b[k] === undefined) return;
     let v = b[k];
     if (k === 'limit_user' || k === 'limit_total') v = Math.max(0, parseInt(v, 10) || 0);
-    if (k === 'ai_mask' || k === 'limits_enabled') v = !!v;
+    if (k === 'ai_mask' || k === 'limits_enabled' || k === 'ai_bloqueia') v = !!v;
     if (typeof v === 'string') v = v.trim();
     if (JSON.stringify(cfg[k]) !== JSON.stringify(v)) { mud.push(k + ': ' + (cfg[k] === '' ? '(vazio)' : cfg[k]) + ' → ' + (v === '' ? '(vazio)' : v)); cfg[k] = v; }
   });
@@ -353,7 +384,8 @@ rota('GET', '/api/checks', 'user', async (c) => json({ checks: (await lerConfig(
 rota('PUT', '/api/checks', 'admin', async (c) => {
   const b = await corpo(c.req);
   if (!Array.isArray(b.checks)) throw new HttpError(400, 'Lista inválida.');
-  const lista = b.checks.map((x) => ({ id: String(x.id), active: x.active !== false, severity: x.severity === 'R' ? 'R' : 'B', params: x.params || undefined }));
+  const lista = b.checks.map((x) => ({ id: String(x.id), active: x.active !== false, severity: x.severity === 'R' ? 'R' : 'B',
+    mode: x.mode === 'aviso' ? 'aviso' : 'bloqueia', params: x.params || undefined }));
   await gravarConfig(c.env, 'checks', lista);
   await logConfig(c.env, c.user.id, 'Conferências automáticas atualizadas');
   return json({ ok: true });
@@ -378,7 +410,7 @@ rota('POST', '/api/manual', 'admin', async (c) => {
   if (!b.version || !Array.isArray(b.rules) || !b.rules.length) throw new HttpError(400, 'Informe a versão e as regras.');
   const regras = b.rules.map((r) => ({
     code: String(r.code).slice(0, 20), text: String(r.text).slice(0, 2000), sev: r.sev === 'R' ? 'R' : 'B',
-    chapter: String(r.chapter || ''), aval: ['auto', 'ia', 'checklist', 'nao'].includes(r.aval) ? r.aval : 'ia'
+    chapter: String(r.chapter || ''), section: String(r.section || '').slice(0, 80), aval: ['auto', 'ia', 'checklist', 'nao'].includes(r.aval) ? r.aval : 'ia'
   }));
   const status = b.draft ? 'rascunho' : 'vigente';
   const stmts = [c.env.DB.prepare("DELETE FROM manual_versions WHERE status = 'rascunho'")];
@@ -388,6 +420,26 @@ rota('POST', '/api/manual', 'admin', async (c) => {
   await c.env.DB.batch(stmts);
   if (!b.draft) await logConfig(c.env, c.user.id, 'Manual v' + b.version + ' publicado (' + regras.length + ' regras)');
   return json({ ok: true, status });
+});
+
+// ---- orientacoes do CoE para a IA ----
+async function lerOrientacoes(env) {
+  const o = await lerConfig(env, 'orientacoes');
+  return Array.isArray(o) ? o : ORIENTACOES_PADRAO;
+}
+function limparOrientacao(o, autor) {
+  return { id: String(o.id || 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)).slice(0, 20),
+    regras: String(o.regras || '').slice(0, 80), texto: String(o.texto || '').trim().slice(0, 600), ativa: o.ativa !== false,
+    origem: String(o.origem || 'Cadastro manual').slice(0, 120), em: o.em || agora(), autor: o.autor || autor || '' };
+}
+rota('GET', '/api/orientacoes', 'user', async (c) => json({ orientacoes: await lerOrientacoes(c.env) }));
+rota('PUT', '/api/orientacoes', 'admin', async (c) => {
+  const b = await corpo(c.req);
+  if (!Array.isArray(b.orientacoes)) throw new HttpError(400, 'Lista inválida.');
+  const lista = b.orientacoes.map((o) => limparOrientacao(o, c.user.name)).filter((o) => o.texto).slice(0, 80);
+  await gravarConfig(c.env, 'orientacoes', lista);
+  await logConfig(c.env, c.user.id, 'Orientações à IA atualizadas (' + lista.filter((o) => o.ativa).length + ' ativas)');
+  return json({ orientacoes: lista });
 });
 
 // ---- IA na autoavaliacao ----
@@ -436,29 +488,113 @@ rota('POST', '/api/evaluations', 'user', async (c) => {
 rota('GET', '/api/evaluations', 'user', async (c) => {
   const todos = c.user.role === 'admin' && c.url.searchParams.get('todos') === '1';
   const { results } = await c.env.DB.prepare(
-    `SELECT e.id, e.process_name, e.app_code, e.flow_version, e.round, e.manual_version, e.with_ai, e.created_at, e.b_open, e.r_open, e.confirm, e.ready, u.name AS analista
+    `SELECT e.id, e.process_name, e.app_code, e.flow_version, e.round, e.manual_version, e.with_ai, e.created_at, e.b_open, e.r_open, e.confirm, e.ready,
+            COALESCE(e.coe_status,'rascunho') AS coe_status, e.submitted_at, e.reviewed_at, u.name AS analista
      FROM evaluations e JOIN users u ON u.id = e.user_id ${todos ? '' : 'WHERE e.user_id = ?'} ORDER BY e.id DESC LIMIT 300`)
     .bind(...(todos ? [] : [c.user.id])).all();
   return json({ evaluations: results });
 });
+// Fila do CoE: autoavaliacoes enviadas pelos analistas
+rota('GET', '/api/coe/queue', 'admin', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT e.id, e.process_name, e.app_code, e.flow_version, e.round, e.manual_version, e.created_at, e.b_open, e.r_open, e.confirm, e.ready,
+            e.coe_status, e.submitted_at, e.reviewed_at, e.items, u.name AS analista, r.name AS revisor
+     FROM evaluations e JOIN users u ON u.id = e.user_id LEFT JOIN users r ON r.id = e.reviewer_id
+     WHERE COALESCE(e.coe_status,'rascunho') <> 'rascunho' ORDER BY e.coe_status <> 'enviado', COALESCE(e.submitted_at, e.created_at) DESC LIMIT 300`).all();
+  return json({ evaluations: results.map((e) => {
+    const its = JSON.parse(e.items || '[]');
+    const { items, ...rest } = e;
+    return { ...rest, justificados: its.filter((i) => i.just).length };
+  }) });
+});
 async function avaliacaoDoUsuario(c) {
-  const e = await c.env.DB.prepare('SELECT e.*, u.name AS analista FROM evaluations e JOIN users u ON u.id = e.user_id WHERE e.id = ?').bind(c.params.id).first();
+  const e = await c.env.DB.prepare(
+    `SELECT e.*, COALESCE(e.coe_status,'rascunho') AS coe_status, u.name AS analista, r.name AS revisor
+     FROM evaluations e JOIN users u ON u.id = e.user_id LEFT JOIN users r ON r.id = e.reviewer_id WHERE e.id = ?`).bind(c.params.id).first();
   if (!e || (e.user_id !== c.user.id && c.user.role !== 'admin')) throw new HttpError(404, 'Autoavaliação não encontrada.');
   return e;
 }
 rota('GET', '/api/evaluations/:id', 'user', async (c) => {
   const e = await avaliacaoDoUsuario(c);
-  return json({ ...e, items: JSON.parse(e.items), risks: JSON.parse(e.risks || '[]'), summary: JSON.parse(e.summary || '{}') });
+  return json({ ...e, items: JSON.parse(e.items), risks: JSON.parse(e.risks || '[]'), summary: JSON.parse(e.summary || '{}'), coe_opinion: JSON.parse(e.coe_opinion || 'null') });
 });
 rota('PATCH', '/api/evaluations/:id', 'user', async (c) => {
   const e = await avaliacaoDoUsuario(c);
   if (e.user_id !== c.user.id) throw new HttpError(403, 'Só o analista que fez a autoavaliação pode alterá-la.');
+  if (e.coe_status !== 'rascunho') throw new HttpError(409, 'Esta rodada já foi enviada ao CoE e não pode mais ser alterada. Faça uma nova rodada.');
   const b = await corpo(c.req);
   if (!Array.isArray(b.items)) throw new HttpError(400, 'Itens inválidos.');
   const t = totais(b.items);
   await c.env.DB.prepare('UPDATE evaluations SET items = ?, b_open = ?, r_open = ?, confirm = ?, ready = ? WHERE id = ?')
     .bind(JSON.stringify(b.items), t.b, t.r, t.conf, t.ready, e.id).run();
   return json({ ok: true, ...t });
+});
+
+// Itens que impedem o envio sem justificativa: bloqueante aberto ou checklist nao confirmado
+const exigeJustificativa = (i) => (i.status === 'aberto' && i.sev === 'B') || i.status === 'confirmar';
+const MIN_JUST = 15;
+rota('POST', '/api/evaluations/:id/submit', 'user', async (c) => {
+  const e = await avaliacaoDoUsuario(c);
+  if (e.user_id !== c.user.id) throw new HttpError(403, 'Só o analista que fez a autoavaliação pode enviá-la.');
+  if (e.coe_status !== 'rascunho') throw new HttpError(409, 'Esta rodada já foi enviada ao CoE.');
+  const b = await corpo(c.req);
+  const antes = JSON.parse(e.items);
+  if (!Array.isArray(b.items) || b.items.length !== antes.length) throw new HttpError(400, 'Itens inválidos.');
+  // o analista so altera status de checklist e a justificativa; o resto vem do banco
+  const items = antes.map((i, n) => {
+    const x = b.items[n] || {};
+    const novo = { ...i };
+    if (['confirmar', 'confirmado'].includes(i.status) && ['confirmar', 'confirmado'].includes(x.status)) { novo.status = x.status; novo.comment = x.comment || i.comment; }
+    if (x.prints) novo.prints = x.prints;
+    const j = String(x.just || '').trim().slice(0, 1500);
+    if (j && exigeJustificativa(novo)) { novo.just = j; novo.justAt = agora(); } else delete novo.just;
+    return novo;
+  });
+  const falta = items.filter((i) => exigeJustificativa(i) && (!i.just || i.just.length < MIN_JUST));
+  if (falta.length) throw new HttpError(400, 'Justifique cada pendência bloqueante (mínimo de ' + MIN_JUST + ' caracteres): ' + falta.map((i) => i.id).join(', ') + '.');
+  const t = totais(items);
+  await c.env.DB.prepare("UPDATE evaluations SET items = ?, b_open = ?, r_open = ?, confirm = ?, ready = ?, coe_status = 'enviado', submitted_at = ? WHERE id = ?")
+    .bind(JSON.stringify(items), t.b, t.r, t.conf, t.ready, agora(), e.id).run();
+  return json({ ok: true, justificados: items.filter((i) => i.just).length });
+});
+
+const DECISOES_ITEM = ['aceito', 'ressalva', 'nao_aceito'];
+const DECISOES_GERAIS = ['aprovado', 'aprovado_ressalva', 'devolvido'];
+rota('POST', '/api/evaluations/:id/review', 'admin', async (c) => {
+  const e = await avaliacaoDoUsuario(c);
+  if (e.coe_status === 'rascunho') throw new HttpError(409, 'O analista ainda não enviou esta rodada ao CoE.');
+  const b = await corpo(c.req);
+  if (!DECISOES_GERAIS.includes(b.decisao)) throw new HttpError(400, 'Escolha a decisão: aprovado, aprovado com ressalva ou devolvido.');
+  const items = JSON.parse(e.items);
+  const dec = b.itens || {};
+  Object.keys(dec).forEach((k) => {
+    const i = items[Number(k)], d = dec[k] || {};
+    if (!i) return;
+    const instr = String(d.instrucao || '').trim().slice(0, 1500);
+    if (!DECISOES_ITEM.includes(d.decisao) && !instr) { delete i.coe; return; }
+    i.coe = { decisao: DECISOES_ITEM.includes(d.decisao) ? d.decisao : 'aceito', instrucao: instr, por: c.user.name, em: agora() };
+  });
+  // itens justificados precisam de decisao
+  const semDecisao = items.filter((i) => i.just && !i.coe);
+  if (semDecisao.length) throw new HttpError(400, 'Decida as justificativas de: ' + semDecisao.map((i) => i.id).join(', ') + '.');
+  const nao = items.filter((i) => i.coe && i.coe.decisao === 'nao_aceito').length;
+  const ress = items.filter((i) => i.coe && i.coe.decisao === 'ressalva').length;
+  if (nao && b.decisao !== 'devolvido') throw new HttpError(400, 'Há justificativa não aceita: a decisão precisa ser "Devolvido para correção".');
+  if (ress && b.decisao === 'aprovado') throw new HttpError(400, 'Há item aceito com ressalva: use "Aprovado com ressalva" ou "Devolvido para correção".');
+  const parecer = String(b.parecer || '').trim().slice(0, 4000);
+  if (b.decisao !== 'aprovado' && parecer.length < 10) throw new HttpError(400, 'Escreva o parecer do CoE com as instruções para o analista.');
+  const opinion = { decisao: b.decisao, parecer, por: c.user.name, em: agora() };
+  await c.env.DB.prepare('UPDATE evaluations SET items = ?, coe_status = ?, coe_opinion = ?, reviewed_at = ?, reviewer_id = ? WHERE id = ?')
+    .bind(JSON.stringify(items), b.decisao, JSON.stringify(opinion), agora(), c.user.id, e.id).run();
+  // decisoes que o CoE quer que a IA siga daqui em diante
+  const novas = (Array.isArray(b.orientacoes) ? b.orientacoes : []).map((o) => limparOrientacao({
+    ...o, origem: 'Decisão na avaliação de ' + e.process_name + ' (rodada ' + e.round + ')' }, c.user.name)).filter((o) => o.texto);
+  if (novas.length) {
+    const lista = (await lerOrientacoes(c.env)).concat(novas).slice(-80);
+    await gravarConfig(c.env, 'orientacoes', lista);
+    await logConfig(c.env, c.user.id, novas.length + ' orientação(ões) à IA criadas a partir da avaliação #' + e.id);
+  }
+  return json({ ok: true, orientacoesCriadas: novas.length });
 });
 
 // ---- prints de evidencia (KV) ----
@@ -531,9 +667,11 @@ rota('GET', '/api/reports', 'admin', async (c) => {
   if (q.get('manual')) { cond.push('e.manual_version = ?'); args.push(q.get('manual')); }
   if (q.get('situacao') === 'pronto') cond.push('e.ready = 1');
   if (q.get('situacao') === 'corrigir') cond.push('e.ready = 0');
+  if (['rascunho', 'enviado', 'aprovado', 'aprovado_ressalva', 'devolvido'].includes(q.get('coe'))) { cond.push("COALESCE(e.coe_status,'rascunho') = ?"); args.push(q.get('coe')); }
   if (q.get('ultima') !== '0') cond.push(`e.id = (SELECT MAX(x.id) FROM evaluations x WHERE x.user_id = e.user_id AND lower(x.process_name) = lower(e.process_name) AND COALESCE(x.app_code,'') = COALESCE(e.app_code,''))`);
   const { results } = await c.env.DB.prepare(
-    `SELECT e.id, e.process_name, e.app_code, e.round, e.manual_version, e.created_at, e.b_open, e.r_open, e.confirm, e.ready, u.name AS analista
+    `SELECT e.id, e.process_name, e.app_code, e.round, e.manual_version, e.created_at, e.b_open, e.r_open, e.confirm, e.ready,
+            COALESCE(e.coe_status,'rascunho') AS coe_status, u.name AS analista
        ${tipo === 'processos' ? '' : ', e.items'}
      FROM evaluations e JOIN users u ON u.id = e.user_id WHERE ${cond.join(' AND ')} ORDER BY e.created_at DESC LIMIT 1000`).bind(...args).all();
   if (tipo === 'processos') return json({ tipo, linhas: results });
@@ -552,7 +690,8 @@ rota('GET', '/api/reports', 'admin', async (c) => {
   const linhas = [];
   results.forEach((e) => JSON.parse(e.items).filter(filtra).forEach((i) => linhas.push({
     processo: e.process_name, rodada: e.round, analista: e.analista, data: e.created_at, regra: i.rule, item: i.item, origem: i.origin,
-    severidade: i.sev, status: i.status, comentario: i.comment
+    severidade: i.sev, status: i.status, comentario: i.comment, justificativa: i.just || '',
+    decisao_coe: i.coe ? i.coe.decisao : '', instrucao_coe: i.coe ? i.coe.instrucao : ''
   })));
   return json({ tipo: 'itens', linhas });
 });
@@ -598,6 +737,7 @@ export default {
     if (url.pathname === '/setup') return Response.redirect(url.origin + '/#/setup', 302);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     try {
+      await garantirEsquema(env);
       // Protecao contra requisicoes de outros sites
       if (req.method !== 'GET') {
         const origem = req.headers.get('origin');
