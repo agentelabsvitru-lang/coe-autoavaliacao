@@ -12,12 +12,12 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "coe-autoavaliacao"
-database_id = "cf8b0b76-32cb-4460-a9a2-1931de5e0815"
+database_id = "COLE_AQUI_O_DATABASE_ID_DO_D1"
 
 # Armazenamento KV dos prints e logos (Parte 2 do guia): cole o ID abaixo
 [[kv_namespaces]]
 binding = "PRINTS"
-id = "e34ba77dc10a465aa31d9d9a2341a4c3"
+id = "COLE_AQUI_O_ID_DO_KV"
 
 [observability]
 enabled = true

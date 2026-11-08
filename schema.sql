@@ -54,7 +54,12 @@ CREATE TABLE IF NOT EXISTS evaluations (
   ready INTEGER NOT NULL DEFAULT 0,
   items TEXT NOT NULL,                        -- JSON dos itens avaliados
   risks TEXT,                                 -- JSON: pontos para validar com a area
-  summary TEXT                                -- JSON: o que foi lido dos arquivos
+  summary TEXT,                               -- JSON: o que foi lido dos arquivos
+  coe_status TEXT DEFAULT 'rascunho',         -- rascunho | enviado | aprovado | aprovado_ressalva | devolvido
+  submitted_at TEXT,
+  reviewed_at TEXT,
+  reviewer_id INTEGER,
+  coe_opinion TEXT                            -- JSON: {decisao, parecer, por, em}
 );
 CREATE INDEX IF NOT EXISTS idx_eval_user ON evaluations (user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_eval_proc ON evaluations (process_name, app_code);
