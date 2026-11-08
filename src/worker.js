@@ -159,11 +159,17 @@ async function chamarModelo(cfg, env, modelo, system, user) {
     const headers = { 'content-type': 'application/json' };
     if (azure) headers['api-key'] = chave; else headers.authorization = 'Bearer ' + chave;
     if (cfg.ai_provider === 'openrouter') { headers['x-title'] = 'Autoavaliacao CoE Zeev'; }
-    const body = { messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.1 };
+    // Gemma (Google AI Studio) nao aceita mensagem de sistema: junta tudo na mensagem do usuario
+    const semSistema = /gemma/i.test(modelo || '');
+    const body = { messages: semSistema ? [{ role: 'user', content: system + '\n\n' + user }] : [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.1 };
     if (!azure) body.model = modelo;
     resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
     const j = await resp.json().catch(() => ({}));
-    if (!resp.ok || j.error) throw new Error((j.error && (j.error.message || j.error)) || `HTTP ${resp.status}`);
+    if (!resp.ok || j.error) {
+      const e = j.error || {};
+      const det = e.metadata && e.metadata.raw ? ' (' + String(e.metadata.raw).slice(0, 300) + ')' : '';
+      throw new Error((e.message || (typeof e === 'string' ? e : '') || `HTTP ${resp.status}`) + det);
+    }
     texto = j.choices && j.choices[0] && j.choices[0].message ? j.choices[0].message.content : '';
   }
   if (!texto) throw new Error('A IA devolveu resposta vazia.');
