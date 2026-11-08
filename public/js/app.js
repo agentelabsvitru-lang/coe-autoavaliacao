@@ -63,6 +63,15 @@
   var STATUS = { conforme: 'Conforme', aberto: 'Aberto', confirmar: 'Confirmar', confirmado: 'Confirmado', liberado: 'Liberado p/ homologação',
     verificar: 'A verificar', na: 'Não se aplica' };
   function st(s, label) { return '<span class="st st-' + h(s) + '">' + h(label || STATUS[s] || s) + '</span>'; }
+  // Recomendado em aberto nao bloqueia: aparece como melhoria sugerida
+  function rotulo(i) { return i.status === 'aberto' && i.sev === 'R' ? 'Melhoria sugerida' : (STATUS[i.status] || i.status); }
+  function stItem(i) { return i.status === 'aberto' && i.sev === 'R' ? st('melhoria', 'Melhoria sugerida') : st(i.status); }
+  var COE_ST = { rascunho: 'Não enviada ao CoE', enviado: 'Aguardando CoE', aprovado: 'Aprovado pelo CoE', aprovado_ressalva: 'Aprovado com ressalva', devolvido: 'Devolvido para correção' };
+  var DEC_ITEM = { aceito: 'Justificativa aceita', ressalva: 'Aceito com ressalva', nao_aceito: 'Não aceito' };
+  function stCoe(s) { return st('coe-' + (s || 'rascunho'), COE_ST[s || 'rascunho']); }
+  // Pendencia que impede o envio sem justificativa (mesma regra do servidor)
+  function exigeJust(i) { return (i.status === 'aberto' && i.sev === 'B') || i.status === 'confirmar'; }
+  var MIN_JUST = 15;
   var ORDEM = { aberto: 1, confirmar: 2, verificar: 3, liberado: 4, confirmado: 5, conforme: 6, na: 7 };
 
   /* ------------------------------ estrutura ------------------------------ */
@@ -75,7 +84,9 @@
       '<div class="brand"><div class="brand-mark">CoE</div><div><b>Autoavaliação Zeev</b><small>Padrões CoE Vitru</small></div></div>' +
       '<nav class="nav" aria-label="Menu principal"><span class="nav-title">Analista</span>' +
       item('#/nova', 'Nova autoavaliação') + item('#/historico', 'Minhas autoavaliações') +
-      (admin ? '<span class="nav-title sep">Administração CoE</span>' + item('#/admin/padroes', 'Padrões do manual') +
+      (admin ? '<span class="nav-title sep">Administração CoE</span>' +
+        item('#/admin/avaliacoes', 'Avaliações recebidas' + (me.pendentesCoe ? ' <span class="badge">' + me.pendentesCoe + '</span>' : '')) +
+        item('#/admin/padroes', 'Padrões do manual') + item('#/admin/orientacoes', 'Orientações à IA') +
         item('#/admin/conferencias', 'Conferências automáticas') + item('#/admin/relatorios', 'Relatórios') + item('#/admin/uso', 'IA, uso e limites') : '') +
       '</nav><div class="side-foot">' +
       '<div class="quota"><small>Análises com IA hoje</small><b>' + (lim.ativo ? u.meu + ' de ' + lim.porAnalista + ' usadas' : u.meu + ' (sem limite)') + '</b>' +
@@ -94,7 +105,8 @@
     [/^#\/login$/, viewLogin, null], [/^#\/setup$/, viewSetup, null], [/^#\/convite\/(.+)$/, viewConvite, null],
     [/^#\/nova$/, viewNova, 'user'], [/^#\/historico$/, viewHistorico, 'user'], [/^#\/resultado\/(\d+)$/, viewResultado, 'user'],
     [/^#\/admin\/padroes$/, viewPadroes, 'admin'], [/^#\/admin\/revisao$/, viewRevisao, 'admin'], [/^#\/admin\/conferencias$/, viewConferencias, 'admin'],
-    [/^#\/admin\/relatorios$/, viewRelatorios, 'admin'], [/^#\/admin\/uso$/, viewUso, 'admin']
+    [/^#\/admin\/relatorios$/, viewRelatorios, 'admin'], [/^#\/admin\/uso$/, viewUso, 'admin'],
+    [/^#\/admin\/avaliacoes$/, viewAvaliacoes, 'admin'], [/^#\/admin\/orientacoes$/, viewOrientacoes, 'admin']
   ];
   async function render() {
     var hash = location.hash || '#/nova';
@@ -240,7 +252,7 @@
       var resumo = E.summary(P);
       marca(p1, 'done', 'Arquivos lidos: ' + [resumo.xls, resumo.diagram].filter(Boolean).join(' · '));
       var p2 = passo('Rodando as conferências automáticas', 'run');
-      var dados = await Promise.all([api('/api/checks'), api('/api/manual')]);
+      var dados = await Promise.all([api('/api/checks'), api('/api/manual'), api('/api/orientacoes')]);
       var auto = E.runChecks(P, dados[0].checks);
       var manual = dados[1].vigente;
       var rules = manual ? manual.rules : [];
@@ -251,7 +263,7 @@
       if (usarIA && regrasIA.length) {
         var p3 = passo('Analisando ' + regrasIA.length + ' regras com IA (pode levar até 1 minuto)', 'run');
         try {
-          var pr = E.aiPrompt(P, regrasIA, true);
+          var pr = E.aiPrompt(P, regrasIA, true, dados[2].orientacoes);
           var r = await api('/api/ai/evaluate', { method: 'POST', body: pr });
           resposta = E.parseAiAnswer(r.texto); modelo = r.modelo; avisoIA = r.aviso;
           marca(p3, 'done', 'Análise por IA concluída (' + r.modelo + ')');
@@ -259,7 +271,7 @@
           marca(p3, 'err', 'IA indisponível: ' + e.message + '. Os itens de IA ficam como "A verificar".');
         }
       }
-      var items = E.buildItems(auto, rules, resposta);
+      var items = E.buildItems(auto, rules, resposta, { iaBloqueia: S.me.iaBloqueia });
       var p4 = passo('Salvando a rodada', 'run');
       var salvo = await api('/api/evaluations', { method: 'POST', body: {
         process_name: proc, app_code: S.lastFiles.app, flow_version: S.lastFiles.ver, area: S.lastFiles.area,
@@ -279,58 +291,118 @@
     await carregarMe();
     var ev = await api('/api/evaluations/' + id);
     var dono = ev.user_id === S.me.user.id;
+    var admin = S.me.user.role === 'admin';
+    var editavel = dono && ev.coe_status === 'rascunho';
+    var revisando = admin && ev.coe_status !== 'rascunho';
     var filtro = { sev: 'todos', status: 'pend', origem: '' };
+    // decisoes do CoE em edicao: { idx: { decisao, instrucao, orientar, regras } }
+    var rev = {};
+    ev.items.forEach(function (i, n) { if (i.coe) rev[n] = { decisao: i.coe.decisao, instrucao: i.coe.instrucao || '', orientar: false, regras: i.rule }; });
+    var revGeral = { decisao: ev.coe_opinion ? ev.coe_opinion.decisao : '', parecer: ev.coe_opinion ? ev.coe_opinion.parecer : '' };
+    function pendentes() { return ev.items.filter(exigeJust); }
+    function semJust() { return pendentes().filter(function (i) { return !i.just || i.just.trim().length < MIN_JUST; }); }
+    function revisavel(i) { return !!i.just || ['aberto', 'confirmar', 'verificar', 'liberado'].indexOf(i.status) >= 0; }
+
+    function bannerHtml(t) {
+      var op = ev.coe_opinion;
+      if (ev.coe_status === 'enviado') return '<div class="banner info" role="status"><div><b>Enviado ao CoE em ' + h(dataBR(ev.submitted_at, true)) + '</b>' +
+        (admin ? 'Avalie as justificativas abaixo e registre a decisão no fim da página.' : 'Aguardando a avaliação do CoE. Esta rodada não pode mais ser alterada.') + '</div></div>';
+      if (op) {
+        var cls = op.decisao === 'aprovado' ? 'ok' : op.decisao === 'devolvido' ? 'bad' : 'warn';
+        return '<div class="banner ' + cls + '" role="status"><div><b>' + h(COE_ST[op.decisao]) + ' · ' + h(op.por) + ' em ' + h(dataBR(op.em, true)) + '</b>' +
+          (op.parecer ? '<span style="white-space:pre-wrap">' + h(op.parecer) + '</span>' : '') +
+          (op.decisao === 'devolvido' && dono ? '<br>Corrija os itens não aceitos e envie uma nova rodada.' : '') + '</div></div>';
+      }
+      if (t.pronto) return '<div class="banner ok" role="status"><div><b>Pronto para o CoE</b>Nenhum bloqueante aberto e checklist confirmado. Envie ao CoE no fim da página.</div></div>';
+      var p = pendentes().length, f = semJust().length;
+      return '<div class="banner bad" role="status"><div><b>' + p + ' pendência(s) bloqueante(s): ' + t.bAbertos + ' bloqueante(s) aberto(s)' + (t.confirmar ? ' e ' + t.confirmar + ' item(ns) de checklist a confirmar' : '') + '</b>' +
+        'Corrija e rode uma nova rodada, ou, se discordar do apontamento, escreva uma justificativa em cada pendência e envie ao CoE. ' +
+        (p - f) + ' de ' + p + ' justificada(s). Melhorias sugeridas (recomendados) não impedem o envio.</div></div>';
+    }
+    function celulaItem(i, idx) {
+      var prints = (i.prints || []).map(function (p) { return '<a href="/api/prints/' + encodeURIComponent(p.key) + '" target="_blank" rel="noopener">' + h(p.name) + '</a>'; }).join(' · ');
+      var out = '<div>' + h(i.comment) + '</div>' + (i.fix ? '<div class="fix"><b>Como corrigir:</b> ' + h(i.fix) + '</div>' : '') +
+        (prints ? '<div class="fix"><b>Prints:</b> ' + prints + '</div>' : '');
+      if (editavel && (i.status === 'confirmar' || i.status === 'confirmado')) out += '<div class="acts">' +
+        '<label class="btn sm">Anexar print<input type="file" accept="image/png,image/jpeg" data-print="' + idx + '" class="sr"></label>' +
+        (i.status === 'confirmar' ? '<button class="btn sm dark" data-ok="' + idx + '">Confirmo que está configurado</button>' : '<button class="btn sm" data-undo="' + idx + '">Desfazer confirmação</button>') + '</div>';
+      if (editavel && exigeJust(i)) {
+        var ok = i.just && i.just.trim().length >= MIN_JUST;
+        out += '<div class="just' + (ok ? ' ok' : '') + '" data-jbox="' + idx + '"><label class="f">Justificativa para o CoE <span class="tiny muted">(obrigatória para enviar sem corrigir · mín. ' + MIN_JUST + ' caracteres)</span>' +
+          '<textarea rows="2" data-just="' + idx + '" placeholder="Por que este apontamento não se aplica ou como será tratado">' + h(i.just || '') + '</textarea></label></div>';
+      } else if (i.just) {
+        out += '<div class="just ok"><b>Justificativa do analista:</b> <span style="white-space:pre-wrap">' + h(i.just) + '</span></div>';
+      }
+      if (revisando && revisavel(i)) {
+        var r = rev[idx] || {};
+        out += '<div class="coe-box"><div class="row" style="gap:8px;align-items:center"><b class="small">Decisão do CoE</b>' +
+          '<select data-rdec="' + idx + '" aria-label="Decisão do CoE"><option value="">' + (i.just ? 'Escolha…' : 'Sem decisão') + '</option>' +
+          Object.keys(DEC_ITEM).map(function (k) { return '<option value="' + k + '"' + (r.decisao === k ? ' selected' : '') + '>' + DEC_ITEM[k] + '</option>'; }).join('') + '</select></div>' +
+          '<textarea rows="2" data-rins="' + idx + '" placeholder="Instrução para o analista (ex.: ajustar antes de publicar, ou desconsiderar o apontamento)">' + h(r.instrucao || '') + '</textarea>' +
+          '<label class="check tiny"><input type="checkbox" data-rori="' + idx + '"' + (r.orientar ? ' checked' : '') + '>Guardar esta instrução como orientação para a IA nas próximas análises (regra ' + h(i.rule) + ')</label></div>';
+      } else if (i.coe) {
+        out += '<div class="coe-box ro"><b class="small">' + h(DEC_ITEM[i.coe.decisao] || i.coe.decisao) + '</b>' + (i.coe.instrucao ? ' · <span style="white-space:pre-wrap">' + h(i.coe.instrucao) + '</span>' : '') +
+          '<div class="tiny muted">' + h(i.coe.por) + ' · ' + h(dataBR(i.coe.em, true)) + '</div></div>';
+      }
+      return out;
+    }
+    function rodapeHtml(t) {
+      if (editavel) {
+        var falta = semJust();
+        return '<div class="card" id="envio" style="flex-direction:row;flex-wrap:wrap;justify-content:space-between;align-items:center;padding:16px 18px"><span class="small muted" id="envio-msg">' +
+          (t.pronto ? 'Tudo certo: envie ao CoE para avaliação.' : falta.length ? 'Falta justificar: ' + falta.map(function (i) { return h(i.id); }).join(', ') + '.' : 'Todas as pendências estão justificadas. O CoE vai avaliar cada justificativa.') + '</span>' +
+          '<button class="btn primary" id="enviar"' + (falta.length ? ' disabled' : '') + '>' + (t.pronto ? 'Enviar ao CoE' : 'Enviar ao CoE com justificativas') + '</button></div>';
+      }
+      if (revisando) {
+        return '<section class="card" id="revisao"><h2>Decisão do CoE</h2><div class="row" style="gap:18px">' +
+          [['aprovado', 'Aprovado'], ['aprovado_ressalva', 'Aprovado com ressalva'], ['devolvido', 'Devolvido para correção']].map(function (x) {
+            return '<label class="check"><input type="radio" name="rdg" value="' + x[0] + '"' + (revGeral.decisao === x[0] ? ' checked' : '') + '>' + x[1] + '</label>'; }).join('') + '</div>' +
+          '<label class="f">Parecer do CoE (obrigatório para ressalva ou devolução)<textarea id="rpar" rows="4" placeholder="Resumo da avaliação e instruções gerais para o analista">' + h(revGeral.parecer) + '</textarea></label>' +
+          '<div class="err-msg" id="rerr"></div><div class="row end"><button class="btn primary" id="rsalvar">Registrar decisão</button></div></section>';
+      }
+      return '';
+    }
     function desenhar() {
       var t = E.totals(ev.items);
       var lista = ev.items.filter(function (i) {
         if (filtro.sev !== 'todos' && i.sev !== filtro.sev) return false;
         if (filtro.origem && i.origin !== filtro.origem) return false;
-        if (filtro.status === 'abertos' && ['aberto', 'confirmar', 'verificar'].indexOf(i.status) < 0) return false;
+        if (filtro.status === 'abertos' && !(['aberto', 'confirmar', 'verificar'].indexOf(i.status) >= 0 || i.just)) return false;
         return true;
       }).sort(function (a, b) {
-        if (filtro.status === 'pend' || filtro.status === 'abertos') { var d = (ORDEM[a.status] || 9) - (ORDEM[b.status] || 9); if (d) return d; }
+        if (filtro.status === 'pend' || filtro.status === 'abertos') {
+          var pa = exigeJust(a) ? 0 : 1, pb = exigeJust(b) ? 0 : 1; if (pa !== pb) return pa - pb;
+          var d = (ORDEM[a.status] || 9) - (ORDEM[b.status] || 9); if (d) return d;
+        }
         return (a.sev === b.sev ? 0 : a.sev === 'B' ? -1 : 1);
       });
       var nB = ev.items.filter(function (i) { return i.sev === 'B'; }).length;
-      var banner = t.pronto
-        ? '<div class="banner ok" role="status"><div><b>Pronto para o CoE</b>Nenhum bloqueante aberto e checklist confirmado. Gere o relatório e envie junto com a solicitação ao CoE.</div></div>'
-        : '<div class="banner bad" role="status"><div><b>Ainda não está pronto para o CoE: ' + t.bAbertos + ' bloqueante(s) aberto(s)</b>' +
-          'Corrija os bloqueantes' + (t.confirmar ? ' e confirme os ' + t.confirmar + ' itens de checklist' : '') + '. Recomendados não impedem o envio, mas ficam registrados no relatório.</div></div>';
-      $app.innerHTML = layout('#/historico',
-        '<div class="head"><div><a class="back" href="#/historico">‹ Minhas autoavaliações</a><h1>' + h(ev.process_name) + ' · rodada ' + ev.round + '</h1>' +
+      $app.innerHTML = layout(revisando ? '#/admin/avaliacoes' : '#/historico',
+        '<div class="head"><div><a class="back" href="' + (revisando ? '#/admin/avaliacoes">‹ Avaliações recebidas' : '#/historico">‹ Minhas autoavaliações') + '</a><h1>' + h(ev.process_name) + ' · rodada ' + ev.round + '</h1>' +
         '<p class="lead">' + [ev.app_code ? 'App ' + h(ev.app_code) : '', ev.flow_version ? 'versão ' + h(ev.flow_version) : '', h(dataBR(ev.created_at, true)),
-          ev.manual_version ? 'Manual v' + h(ev.manual_version) : 'sem manual', ev.with_ai ? 'com IA (' + h(ev.model) + ')' : 'sem IA', dono ? '' : 'analista: ' + h(ev.analista)].filter(Boolean).join(' · ') + '</p></div>' +
+          ev.manual_version ? 'Manual v' + h(ev.manual_version) : 'sem manual', ev.with_ai ? 'com IA (' + h(ev.model) + ')' : 'sem IA', dono ? '' : 'analista: ' + h(ev.analista)].filter(Boolean).join(' · ') + '</p><div>' + stCoe(ev.coe_status) + '</div></div>' +
         '<div class="row"><button class="btn" id="xls">Exportar Excel</button><button class="btn" id="pdf">Exportar PDF</button>' + (dono ? '<a class="btn primary" href="#/nova">Nova rodada</a>' : '') + '</div></div>' +
-        banner +
+        bannerHtml(t) +
         (ev.summary && ev.summary.avisoIA ? '<div class="note warn">' + h(ev.summary.avisoIA) + '</div>' : '') +
         '<div class="grid g4"><div class="tile"><span>Bloqueantes abertos</span><b style="color:var(--bad)">' + t.bAbertos + '</b><small>de ' + nB + ' avaliados</small></div>' +
         '<div class="tile"><span>Para confirmar</span><b style="color:var(--warn)">' + t.confirmar + '</b><small>print ou checklist</small></div>' +
-        '<div class="tile"><span>Bloqueantes conformes</span><b style="color:var(--ok)">' + t.bConformes + '</b><small>' + (t.liberado ? '+ ' + t.liberado + ' liberado(s) p/ homologação' : 'inclui confirmados') + '</small></div>' +
-        '<div class="tile"><span>Recomendados abertos</span><b>' + t.rAbertos + '</b><small>de ' + t.rTotal + ' avaliados</small></div></div>' +
+        '<div class="tile"><span>Justificados</span><b style="color:var(--info)">' + ev.items.filter(function (i) { return i.just; }).length + '</b><small>de ' + pendentes().length + ' pendência(s)</small></div>' +
+        '<div class="tile"><span>Melhorias sugeridas</span><b>' + t.rAbertos + '</b><small>recomendados, não bloqueiam</small></div></div>' +
         '<section class="card flush"><div class="row between" style="padding:16px 18px;border-bottom:1px solid var(--line)">' +
         '<div class="tabs" role="tablist">' + [['todos', 'Todos · ' + ev.items.length], ['B', 'Bloqueantes · ' + nB], ['R', 'Recomendados · ' + (ev.items.length - nB)]].map(function (x) {
           return '<button type="button" role="tab" data-sev="' + x[0] + '" class="' + (filtro.sev === x[0] ? 'on' : '') + '" aria-selected="' + (filtro.sev === x[0]) + '">' + x[1] + '</button>'; }).join('') + '</div>' +
         '<div class="row"><label class="f" style="flex-direction:row;align-items:center">Mostrar<select id="fst"><option value="pend">Pendências primeiro</option><option value="abertos">Só pendências</option><option value="todos">Todos, por severidade</option></select></label>' +
         '<label class="f" style="flex-direction:row;align-items:center">Origem<select id="for"><option value="">Todas</option><option>Automática</option><option>IA</option><option>Checklist</option></select></label></div></div>' +
-        '<div class="tbl-wrap"><table class="tbl" style="min-width:880px"><thead><tr><th>#</th><th>Regra</th><th style="width:28%">Item avaliado</th><th>Origem</th><th>Status</th><th>O que foi encontrado e como corrigir</th></tr></thead><tbody>' +
+        '<div class="tbl-wrap"><table class="tbl" style="min-width:880px"><thead><tr><th>#</th><th>Regra</th><th style="width:26%">Item avaliado</th><th>Origem</th><th>Status</th><th>O que foi encontrado e como corrigir</th></tr></thead><tbody>' +
         lista.map(function (i) {
           var idx = ev.items.indexOf(i);
-          var prints = (i.prints || []).map(function (p) { return '<a href="/api/prints/' + encodeURIComponent(p.key) + '" target="_blank" rel="noopener">' + h(p.name) + '</a>'; }).join(' · ');
           return '<tr><td><b>' + h(i.id) + '</b></td><td class="muted">' + h(i.rule) + ' <span class="tiny">(' + h(i.sev) + ')</span></td><td>' + h(i.item) + '</td>' +
-            '<td><span class="tag">' + h(i.origin) + '</span></td><td>' + st(i.status) + '</td><td><div>' + h(i.comment) + '</div>' +
-            (i.fix ? '<div class="fix"><b>Como corrigir:</b> ' + h(i.fix) + '</div>' : '') +
-            (prints ? '<div class="fix"><b>Prints:</b> ' + prints + '</div>' : '') +
-            (dono && (i.status === 'confirmar' || i.status === 'confirmado') ? '<div class="acts">' +
-              '<label class="btn sm">Anexar print<input type="file" accept="image/png,image/jpeg" data-print="' + idx + '" class="sr"></label>' +
-              (i.status === 'confirmar' ? '<button class="btn sm dark" data-ok="' + idx + '">Confirmo que está configurado</button>' : '<button class="btn sm" data-undo="' + idx + '">Desfazer confirmação</button>') + '</div>' : '') +
-            '</td></tr>';
+            '<td><span class="tag">' + h(i.origin) + '</span></td><td>' + stItem(i) + '</td><td>' + celulaItem(i, idx) + '</td></tr>';
         }).join('') + '</tbody></table></div>' +
         '<div class="tbl-foot">Mostrando ' + lista.length + ' de ' + ev.items.length + ' itens</div></section>' +
         (ev.risks && ev.risks.length ? '<section class="card"><div class="row"><h2>Pontos para validar com a área</h2><span class="tag">IA</span></div><p class="small muted" style="margin:0">Sem regra no manual; não bloqueiam, mas o CoE vai perguntar.</p><ul style="margin:0;padding-left:20px;line-height:1.6">' +
           ev.risks.map(function (r) { return '<li>' + h(r) + '</li>'; }).join('') + '</ul></section>' : '') +
-        '<div class="card" style="flex-direction:row;flex-wrap:wrap;justify-content:space-between;align-items:center;padding:16px 18px"><span class="small muted">' +
-        (t.pronto ? 'Relatório pronto para anexar à solicitação do CoE.' : 'O relatório para o CoE fica disponível quando não houver bloqueante aberto nem item a confirmar.') + '</span>' +
-        '<button class="btn primary" id="coe"' + (t.pronto ? '' : ' disabled') + '>Gerar relatório para o CoE</button></div>');
+        rodapeHtml(t));
       bindLayout();
       $('#fst').value = filtro.status; $('#for').value = filtro.origem;
       $$('[data-sev]').forEach(function (b) { b.addEventListener('click', function () { filtro.sev = b.getAttribute('data-sev'); desenhar(); }); });
@@ -339,9 +411,35 @@
       $$('[data-ok]').forEach(function (b) { b.addEventListener('click', function () { mudar(+b.getAttribute('data-ok'), 'confirmado'); }); });
       $$('[data-undo]').forEach(function (b) { b.addEventListener('click', function () { mudar(+b.getAttribute('data-undo'), 'confirmar'); }); });
       $$('[data-print]').forEach(function (inp) { inp.addEventListener('change', function () { anexar(+inp.getAttribute('data-print'), inp.files[0]); }); });
+      $$('[data-just]').forEach(function (ta) {
+        var n = +ta.getAttribute('data-just');
+        ta.addEventListener('input', function () { ev.items[n].just = ta.value; atualizarEnvio(n); });
+        ta.addEventListener('change', function () { salvar().catch(function (e) { toast(e.message); }); });
+      });
+      $$('[data-rdec]').forEach(function (sel) { sel.addEventListener('change', function () { var n = +sel.getAttribute('data-rdec'); (rev[n] = rev[n] || { regras: ev.items[n].rule }).decisao = sel.value; sugerirGeral(); }); });
+      $$('[data-rins]').forEach(function (ta) { ta.addEventListener('input', function () { var n = +ta.getAttribute('data-rins'); (rev[n] = rev[n] || { regras: ev.items[n].rule }).instrucao = ta.value; }); });
+      $$('[data-rori]').forEach(function (cb) { cb.addEventListener('change', function () { var n = +cb.getAttribute('data-rori'); (rev[n] = rev[n] || { regras: ev.items[n].rule }).orientar = cb.checked; }); });
+      $$('[name="rdg"]').forEach(function (r) { r.addEventListener('change', function () { revGeral.decisao = r.value; }); });
+      on('#rpar', 'input', function (e) { revGeral.parecer = e.target.value; });
+      on('#rsalvar', 'click', registrarDecisao);
+      on('#enviar', 'click', enviar);
       on('#xls', 'click', function () { exportarAvaliacao(ev, 'xlsx'); });
       on('#pdf', 'click', function () { exportarAvaliacao(ev, 'pdf'); });
-      on('#coe', 'click', function () { exportarAvaliacao(ev, 'pdf', true); });
+    }
+    // Atualiza so o contador e o botao, sem redesenhar (mantem o foco no campo)
+    function atualizarEnvio(n) {
+      var box = $('[data-jbox="' + n + '"]');
+      if (box) box.classList.toggle('ok', (ev.items[n].just || '').trim().length >= MIN_JUST);
+      var falta = semJust(), b = $('#enviar'), m = $('#envio-msg');
+      if (b) b.disabled = falta.length > 0;
+      if (m) m.textContent = falta.length ? 'Falta justificar: ' + falta.map(function (i) { return i.id; }).join(', ') + '.' : 'Todas as pendências estão justificadas. O CoE vai avaliar cada justificativa.';
+    }
+    function sugerirGeral() {
+      var ds = Object.keys(rev).map(function (k) { return rev[k].decisao; });
+      var sug = ds.indexOf('nao_aceito') >= 0 ? 'devolvido' : ds.indexOf('ressalva') >= 0 ? 'aprovado_ressalva' : '';
+      if (!sug) return;
+      revGeral.decisao = sug;
+      $$('[name="rdg"]').forEach(function (r) { r.checked = r.value === sug; });
     }
     async function salvar() { await api('/api/evaluations/' + ev.id, { method: 'PATCH', body: { items: ev.items } }); }
     async function mudar(i, status) {
@@ -359,6 +457,28 @@
         if (ev.items[i].status === 'confirmar') { ev.items[i].status = 'confirmado'; ev.items[i].comment = 'Print anexado pelo analista.'; }
         await salvar(); toast('Print anexado.'); desenhar();
       } catch (e) { toast(e.message); }
+    }
+    async function enviar() {
+      var nj = ev.items.filter(function (i) { return exigeJust(i) && i.just; }).length;
+      if (!confirm(nj ? 'Enviar ao CoE com ' + nj + ' pendência(s) justificada(s)? Depois do envio a rodada não pode mais ser alterada.' : 'Enviar esta rodada ao CoE? Depois do envio ela não pode mais ser alterada.')) return;
+      try {
+        await api('/api/evaluations/' + ev.id + '/submit', { method: 'POST', body: { items: ev.items } });
+        toast('Enviado ao CoE.'); viewResultado(ev.id);
+      } catch (e) { toast(e.message); }
+    }
+    async function registrarDecisao() {
+      var err = $('#rerr'); err.textContent = '';
+      var itens = {}, orient = [];
+      Object.keys(rev).forEach(function (k) {
+        var r = rev[k];
+        itens[k] = { decisao: r.decisao || '', instrucao: r.instrucao || '' };
+        if (r.orientar && (r.instrucao || '').trim()) orient.push({ regras: r.regras, texto: r.instrucao.trim() });
+      });
+      try {
+        var r = await api('/api/evaluations/' + ev.id + '/review', { method: 'POST', body: { itens: itens, decisao: revGeral.decisao, parecer: revGeral.parecer, orientacoes: orient } });
+        toast('Decisão registrada' + (r.orientacoesCriadas ? ' · ' + r.orientacoesCriadas + ' orientação(ões) para a IA criada(s)' : '') + '.');
+        await carregarMe(); viewResultado(ev.id);
+      } catch (e) { err.textContent = e.message; }
     }
     desenhar();
   }
@@ -466,23 +586,35 @@
       var t = E.totals(ev.items);
       var meta = [ev.process_name + (ev.app_code ? ' · app ' + ev.app_code : '') + (ev.flow_version ? ' · versão ' + ev.flow_version : '') + ' · rodada ' + ev.round,
         'Analista: ' + ev.analista + ' · ' + dataBR(ev.created_at, true) + (inc.versao ? ' · Manual de Padrões Zeev v' + (ev.manual_version || '-') : ''),
-        'Situação: ' + (t.pronto ? 'Pronto para o CoE' : 'Corrigir antes do CoE') + ' · bloqueantes abertos: ' + t.bAbertos + ' · a confirmar: ' + t.confirmar + ' · recomendados abertos: ' + t.rAbertos];
+        'Situação: ' + (t.pronto ? 'Pronto para o CoE' : 'Pendências bloqueantes') + ' · bloqueantes abertos: ' + t.bAbertos + ' · a confirmar: ' + t.confirmar + ' · melhorias sugeridas: ' + t.rAbertos +
+          ' · justificados: ' + ev.items.filter(function (i) { return i.just; }).length,
+        'No CoE: ' + COE_ST[ev.coe_status || 'rascunho'] + (ev.submitted_at ? ' · enviado em ' + dataBR(ev.submitted_at, true) : '') +
+          (ev.coe_opinion ? ' · decisão de ' + ev.coe_opinion.por + ' em ' + dataBR(ev.coe_opinion.em, true) : '')];
+      var temCoe = ev.items.some(function (i) { return i.just || i.coe; });
       var itens = ev.items.slice().sort(function (a, b) { return (a.sev === b.sev ? (ORDEM[a.status] || 9) - (ORDEM[b.status] || 9) : a.sev === 'B' ? -1 : 1); });
-      var linhas = itens.map(function (i) { return [i.id, i.rule, i.sev === 'B' ? 'Bloqueante' : 'Recomendado', i.item, i.origin, STATUS[i.status] || i.status,
-        i.comment + (i.fix ? ' | Como corrigir: ' + i.fix : '') + (inc.prints && i.prints && i.prints.length ? ' | Prints: ' + i.prints.map(function (p) { return p.name; }).join(', ') : '')]; });
-      var cols = ['#', 'Regra', 'Severidade', 'Item avaliado', 'Origem', 'Status', 'Comentário'];
+      var linhas = itens.map(function (i) {
+        var l = [i.id, i.rule, i.sev === 'B' ? 'Bloqueante' : 'Recomendado', i.item, i.origin, rotulo(i),
+          i.comment + (i.fix ? ' | Como corrigir: ' + i.fix : '') + (inc.prints && i.prints && i.prints.length ? ' | Prints: ' + i.prints.map(function (p) { return p.name; }).join(', ') : '')];
+        if (temCoe) l.push(i.just || '', i.coe ? (DEC_ITEM[i.coe.decisao] || '') + (i.coe.instrucao ? ': ' + i.coe.instrucao : '') : '');
+        return l;
+      });
+      var cols = ['#', 'Regra', 'Severidade', 'Item avaliado', 'Origem', 'Status', 'Comentário'].concat(temCoe ? ['Justificativa do analista', 'Decisão e instrução do CoE'] : []);
       var resumo = [['Bloqueantes', t.bTotal, t.bAbertos, t.bConformes], ['Recomendados', t.rTotal, t.rAbertos, t.rTotal - t.rAbertos]];
       var titulo = (paraCoe ? 'Relatório para o CoE – ' : 'Autoavaliação – ') + ev.process_name;
       var arq = slug(ev.process_name) + '-rodada-' + ev.round;
       var secoes = [];
       if (inc.resumo) secoes.push({ titulo: 'Resumo', colunas: ['Severidade', 'Avaliados', 'Abertos', 'Conformes/confirmados'], linhas: resumo });
-      if (inc.itens) secoes.push({ titulo: 'Itens avaliados', colunas: cols, linhas: linhas, larguras: { 0: { cellWidth: 16 }, 1: { cellWidth: 14 }, 2: { cellWidth: 20 }, 3: { cellWidth: 52 }, 4: { cellWidth: 18 }, 5: { cellWidth: 22 } } });
+      if (ev.coe_opinion && ev.coe_opinion.parecer) secoes.push({ titulo: 'Parecer do CoE · ' + COE_ST[ev.coe_opinion.decisao], colunas: ['Parecer'], linhas: [[ev.coe_opinion.parecer]] });
+      if (inc.itens) secoes.push({ titulo: 'Itens avaliados', colunas: cols, linhas: linhas, larguras: temCoe
+        ? { 0: { cellWidth: 14 }, 1: { cellWidth: 12 }, 2: { cellWidth: 18 }, 3: { cellWidth: 40 }, 4: { cellWidth: 16 }, 5: { cellWidth: 20 } }
+        : { 0: { cellWidth: 16 }, 1: { cellWidth: 14 }, 2: { cellWidth: 20 }, 3: { cellWidth: 52 }, 4: { cellWidth: 18 }, 5: { cellWidth: 22 } } });
       var lista = inc.riscos && ev.risks && ev.risks.length ? { titulo: 'Pontos para validar com a área', itens: ev.risks } : null;
       if (tipo === 'pdf') await gerarPdf({ titulo: titulo, linhasMeta: meta, secoes: secoes, lista: lista }, arq);
       else {
         var pl = [];
         if (inc.resumo) pl.push({ nome: 'Resumo', colunas: ['Severidade', 'Avaliados', 'Abertos', 'Conformes/confirmados'], linhas: resumo, larguras: [18, 12, 12, 22] });
-        pl.push({ nome: 'Itens', colunas: cols, linhas: linhas, larguras: [10, 9, 13, 45, 12, 18, 80] });
+        if (ev.coe_opinion) pl.push({ nome: 'Parecer do CoE', colunas: ['Decisão', 'Parecer', 'Por', 'Em'], linhas: [[COE_ST[ev.coe_opinion.decisao], ev.coe_opinion.parecer, ev.coe_opinion.por, dataBR(ev.coe_opinion.em, true)]], larguras: [24, 90, 22, 18] });
+        pl.push({ nome: 'Itens', colunas: cols, linhas: linhas, larguras: [10, 9, 13, 45, 12, 18, 80, 50, 50] });
         if (lista) pl.push({ nome: 'Pontos para validar', colunas: ['Ponto'], linhas: lista.itens.map(function (x) { return [x]; }), larguras: [100] });
         await gerarXlsx({ titulo: titulo, linhasMeta: meta }, pl, arq);
       }
@@ -516,7 +648,7 @@
         var atual = grupo[0].id === e.id;
         return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + '</td><td>' + e.round + '</td><td>' + h(dataBR(e.created_at, true)) + '</td><td>' + (e.manual_version ? 'v' + h(e.manual_version) : '-') + '</td>' +
           '<td style="font-weight:700;color:' + (e.b_open ? 'var(--bad)' : 'var(--ok)') + '">' + e.b_open + '</td><td>' + e.r_open + '</td><td>' +
-          (atual ? (e.ready ? st('pronto', 'Pronto para o CoE') : st('corrigir', 'Corrigir antes do CoE')) : st('substituida', 'Substituída')) + '</td><td><a href="#/resultado/' + e.id + '"><b>Abrir</b></a></td></tr>';
+          (e.coe_status && e.coe_status !== 'rascunho' ? stCoe(e.coe_status) : atual ? (e.ready ? st('pronto', 'Pronto para o CoE') : st('corrigir', 'Corrigir ou justificar')) : st('substituida', 'Substituída')) + '</td><td><a href="#/resultado/' + e.id + '"><b>Abrir</b></a></td></tr>';
       }).join('') : '<tr><td colspan="8" class="muted">Nenhuma autoavaliação ainda. Comece por <a href="#/nova">Nova autoavaliação</a>.</td></tr>') +
       '</tbody></table></div></section>');
     bindLayout();
@@ -625,21 +757,25 @@
   async function viewConferencias() {
     var cfg = (await api('/api/checks')).checks || [];
     var m = {}; cfg.forEach(function (c) { m[c.id] = c; });
-    var lista = E.CHECKS.map(function (c) { var x = m[c.id] || {}; return Object.assign({}, c, { active: x.active !== false, severity: x.severity || c.sev, params: x.params }); });
+    var lista = E.CHECKS.map(function (c) { var x = m[c.id] || {}; return Object.assign({}, c, { active: x.active !== false, severity: x.severity || c.sev, mode: x.mode || c.mode || 'bloqueia', params: Object.assign({}, c.params || {}, x.params || {}) }); });
     $app.innerHTML = layout('#/admin/conferencias',
-      '<div class="head"><div><h1>Conferências automáticas</h1><p class="lead">Verificações exatas, sem IA, que rodam no navegador do analista. O CoE pode ligar, desligar e mudar a severidade. Uma conferência nova exige código: peça à equipe de Automação.</p></div></div>' +
-      '<section class="card flush"><div class="tbl-wrap"><table class="tbl" style="min-width:880px"><thead><tr><th>ID</th><th>O que verifica</th><th>Arquivo</th><th>Regra</th><th style="width:150px">Severidade</th><th>Ativa</th></tr></thead><tbody>' +
+      '<div class="head"><div><h1>Conferências automáticas</h1><p class="lead">Verificações exatas, sem IA, que rodam no navegador do analista. O CoE pode ligar, desligar, mudar a severidade e definir se o apontamento bloqueia ou só avisa (útil para padrão ainda em validação). Uma conferência nova exige código: peça à equipe de Automação.</p></div></div>' +
+      '<section class="card flush"><div class="tbl-wrap"><table class="tbl" style="min-width:980px"><thead><tr><th>ID</th><th>O que verifica</th><th>Arquivo</th><th>Regra</th><th style="width:150px">Severidade</th><th style="width:150px">Efeito</th><th>Ativa</th></tr></thead><tbody>' +
       lista.map(function (c, i) {
-        return '<tr><td><b>' + h(c.id) + '</b></td><td>' + h(c.desc) + (c.params && c.params.versao || (c.id === 'AUTO-02') ? '<div class="fix tiny">Versão esperada: <input type="text" data-ver="' + i + '" value="' + h((c.params && c.params.versao) || '3.1') + '" style="width:70px;padding:4px 6px"></div>' : '') + '</td>' +
+        return '<tr><td><b>' + h(c.id) + '</b></td><td>' + h(c.desc) +
+          (c.id === 'AUTO-02' ? '<div class="fix tiny">Versão esperada: <input type="text" data-ver="' + i + '" value="' + h(c.params.versao || '3.1') + '" style="width:70px;padding:4px 6px"></div>' : '') +
+          (c.id === 'AUTO-01' ? '<div class="fix tiny">Trechos padrão liberados (um por linha; a linha do script que contém o trecho é ignorada):<textarea data-ign="' + i + '" rows="2" style="width:100%;margin-top:4px">' + h((c.params.ignorar || []).join('\n')) + '</textarea></div>' : '') + '</td>' +
           '<td><span class="tag">' + h(c.files) + '</span></td><td><b>' + h(c.rule) + '</b></td>' +
           '<td><select data-s="' + i + '" aria-label="Severidade"><option value="B"' + (c.severity === 'B' ? ' selected' : '') + '>B - Bloqueante</option><option value="R"' + (c.severity === 'R' ? ' selected' : '') + '>R - Recomendado</option></select></td>' +
+          '<td><select data-m="' + i + '" aria-label="Efeito"><option value="bloqueia"' + (c.mode !== 'aviso' ? ' selected' : '') + '>Bloqueia</option><option value="aviso"' + (c.mode === 'aviso' ? ' selected' : '') + '>Só avisa</option></select></td>' +
           '<td><label class="check"><input type="checkbox" data-a="' + i + '"' + (c.active ? ' checked' : '') + '>Sim</label></td></tr>';
       }).join('') + '</tbody></table></div></section><div class="row end"><button class="btn primary" id="salvar">Salvar alterações</button></div>');
     bindLayout();
     on('#salvar', 'click', async function () {
       var out = lista.map(function (c, i) {
-        var o = { id: c.id, active: $('[data-a="' + i + '"]').checked, severity: $('[data-s="' + i + '"]').value };
+        var o = { id: c.id, active: $('[data-a="' + i + '"]').checked, severity: $('[data-s="' + i + '"]').value, mode: $('[data-m="' + i + '"]').value };
         var v = $('[data-ver="' + i + '"]'); if (v) o.params = { versao: v.value.trim() || '3.1' };
+        var g = $('[data-ign="' + i + '"]'); if (g) o.params = { ignorar: g.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean) };
         return o;
       });
       try { await api('/api/checks', { method: 'PUT', body: { checks: out } }); toast('Conferências salvas.'); } catch (e) { toast(e.message); }
@@ -648,15 +784,17 @@
 
   /* ------------------------------ admin: relatorios ------------------------------ */
   var TIPOS = {
-    processos: { nome: 'Autoavaliações por processo', cols: [['process_name', 'Processo'], ['app_code', 'App'], ['analista', 'Analista'], ['round', 'Rodada'], ['created_at', 'Data'], ['manual_version', 'Manual'], ['b_open', 'Bloqueantes abertos'], ['r_open', 'Recomendados abertos'], ['confirm', 'A confirmar'], ['ready', 'Situação']] },
+    processos: { nome: 'Autoavaliações por processo', cols: [['process_name', 'Processo'], ['app_code', 'App'], ['analista', 'Analista'], ['round', 'Rodada'], ['created_at', 'Data'], ['manual_version', 'Manual'], ['b_open', 'Bloqueantes abertos'], ['r_open', 'Recomendados abertos'], ['confirm', 'A confirmar'], ['ready', 'Situação'], ['coe_status', 'Situação no CoE']] },
     regras: { nome: 'Não conformidades mais frequentes', cols: [['regra', 'Regra'], ['item', 'Item'], ['severidade', 'Sev.'], ['ocorrencias', 'Ocorrências'], ['processos', 'Processos']] },
     uso: { nome: 'Uso da IA por analista', cols: [['analista', 'Analista'], ['email', 'E-mail'], ['analises', 'Análises'], ['falhas', 'Falhas'], ['dias', 'Dias com uso']] },
-    itens: { nome: 'Detalhe dos itens avaliados', cols: [['processo', 'Processo'], ['rodada', 'Rodada'], ['analista', 'Analista'], ['data', 'Data'], ['regra', 'Regra'], ['item', 'Item'], ['origem', 'Origem'], ['severidade', 'Sev.'], ['status', 'Status'], ['comentario', 'Comentário']] }
+    itens: { nome: 'Detalhe dos itens avaliados', cols: [['processo', 'Processo'], ['rodada', 'Rodada'], ['analista', 'Analista'], ['data', 'Data'], ['regra', 'Regra'], ['item', 'Item'], ['origem', 'Origem'], ['severidade', 'Sev.'], ['status', 'Status'], ['comentario', 'Comentário'], ['justificativa', 'Justificativa do analista'], ['decisao_coe', 'Decisão do CoE'], ['instrucao_coe', 'Instrução do CoE']] }
   };
   function celula(k, v) {
     if (k === 'created_at' || k === 'data') return dataBR(v, true);
     if (k === 'ready') return v ? 'Pronto para o CoE' : 'Corrigir antes do CoE';
     if (k === 'status') return STATUS[v] || v;
+    if (k === 'coe_status') return COE_ST[v || 'rascunho'];
+    if (k === 'decisao_coe') return DEC_ITEM[v] || '';
     return v == null ? '' : v;
   }
   async function viewRelatorios() {
@@ -664,7 +802,7 @@
     var cfgAll = (await api('/api/config')).config;
     var rep = cfgAll.report;
     var hoje = new Date(), ini = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
-    var f = { tipo: 'processos', de: ini.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), processo: '', analista: '', situacao: '', severidade: '', capitulo: '', manual: '', ultima: '1' };
+    var f = { tipo: 'processos', de: ini.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), processo: '', analista: '', situacao: '', coe: '', severidade: '', capitulo: '', manual: '', ultima: '1' };
     var dados = { linhas: [] };
     function opt(v, t, sel) { return '<option value="' + h(v) + '"' + (v === sel ? ' selected' : '') + '>' + h(t) + '</option>'; }
     $app.innerHTML = layout('#/admin/relatorios',
@@ -676,6 +814,7 @@
       '<label class="f">Processo<select id="processo">' + opt('', 'Todos', '') + filtros.processos.map(function (p) { return opt(p, p, ''); }).join('') + '</select></label>' +
       '<label class="f">Analista<select id="analista">' + opt('', 'Todos', '') + filtros.analistas.map(function (a) { return opt(String(a.id), a.name, ''); }).join('') + '</select></label>' +
       '<label class="f">Situação<select id="situacao">' + opt('', 'Todas', '') + opt('corrigir', 'Corrigir antes do CoE', '') + opt('pronto', 'Pronto para o CoE', '') + '</select></label>' +
+      '<label class="f">Situação no CoE<select id="coe">' + opt('', 'Todas', '') + Object.keys(COE_ST).map(function (k) { return opt(k, COE_ST[k], ''); }).join('') + '</select></label>' +
       '<label class="f">Severidade<select id="severidade">' + opt('', 'Bloqueantes e recomendados', '') + opt('B', 'Só bloqueantes', '') + opt('R', 'Só recomendados', '') + '</select></label>' +
       '<label class="f">Capítulo do manual<select id="capitulo">' + opt('', 'Todos', '') + ['1. Modelagem', '2. Formulários', '3. Scripts e estilos', '4. Integrações', '5. Responsáveis e SLA', '6. E-mails', '7. Publicação'].map(function (c) { return opt(c[0], c, ''); }).join('') + '</select></label></div>' +
       '<div class="row"><label class="check small"><input type="checkbox" id="ultima" checked>Só a última rodada de cada processo</label>' +
@@ -705,7 +844,7 @@
       '<div class="row end"><button class="btn primary" id="rsave">Salvar configuração</button></div></section>');
     bindLayout();
     function lerFiltros() {
-      ['tipo', 'de', 'ate', 'processo', 'analista', 'situacao', 'severidade', 'capitulo', 'manual'].forEach(function (k) { f[k] = $('#' + k).value; });
+      ['tipo', 'de', 'ate', 'processo', 'analista', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { f[k] = $('#' + k).value; });
       f.ultima = $('#ultima').checked ? '1' : '0';
     }
     async function carregar() {
@@ -732,6 +871,7 @@
       if (f.processo) p.push('Processo: ' + f.processo);
       if (f.analista) p.push('Analista: ' + $('#analista').selectedOptions[0].textContent);
       if (f.situacao) p.push('Situação: ' + $('#situacao').selectedOptions[0].textContent);
+      if (f.coe) p.push('No CoE: ' + COE_ST[f.coe]);
       if (f.severidade) p.push($('#severidade').selectedOptions[0].textContent);
       if (f.capitulo) p.push('Capítulo ' + $('#capitulo').selectedOptions[0].textContent);
       if (f.manual) p.push('Manual v' + f.manual);
@@ -740,7 +880,7 @@
     function tabela() { var T = TIPOS[dados.tipo]; return { colunas: T.cols.map(function (c) { return c[1]; }), linhas: dados.linhas.map(function (l) { return T.cols.map(function (c) { return celula(c[0], l[c[0]]); }); }) }; }
     on('#aplicar', 'click', function () { carregar().catch(function (e) { toast(e.message); }); });
     on('#tipo', 'change', function () { carregar().catch(function (e) { toast(e.message); }); });
-    on('#limpar', 'click', function () { ['processo', 'analista', 'situacao', 'severidade', 'capitulo', 'manual'].forEach(function (k) { $('#' + k).value = ''; }); $('#ultima').checked = true; carregar(); });
+    on('#limpar', 'click', function () { ['processo', 'analista', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { $('#' + k).value = ''; }); $('#ultima').checked = true; carregar(); });
     on('#rp', 'click', async function () {
       try { toast('Gerando o PDF…'); var t = tabela(); await gerarPdf({ titulo: rep.title + ' – ' + TIPOS[dados.tipo].nome, linhasMeta: metaFiltros(), secoes: [{ colunas: t.colunas, linhas: t.linhas }] }, slug(TIPOS[dados.tipo].nome) + '-' + f.de + '-' + f.ate); }
       catch (e) { toast(e.message); }
@@ -769,6 +909,64 @@
     carregar().catch(function (e) { toast(e.message); });
   }
 
+  /* ------------------------------ admin: avaliacoes recebidas ------------------------------ */
+  async function viewAvaliacoes() {
+    await carregarMe();
+    var r = await api('/api/coe/queue');
+    var aba = 'enviado';
+    function desenhar() {
+      var lista = r.evaluations.filter(function (e) { return aba === 'todas' || (aba === 'enviado' ? e.coe_status === 'enviado' : e.coe_status !== 'enviado'); });
+      var n = function (f) { return r.evaluations.filter(f).length; };
+      $app.innerHTML = layout('#/admin/avaliacoes',
+        '<div class="head"><div><h1>Avaliações recebidas</h1><p class="lead">Rodadas que os analistas enviaram ao CoE. Pendências bloqueantes chegam com a justificativa do analista: aceite, aceite com ressalva ou devolva, sempre com instrução.</p></div></div>' +
+        '<section class="card flush"><div class="row between" style="padding:16px 18px;border-bottom:1px solid var(--line)"><div class="tabs" role="tablist">' +
+        [['enviado', 'Aguardando CoE · ' + n(function (e) { return e.coe_status === 'enviado'; })], ['avaliadas', 'Avaliadas · ' + n(function (e) { return e.coe_status !== 'enviado'; })], ['todas', 'Todas · ' + r.evaluations.length]].map(function (x) {
+          return '<button type="button" role="tab" data-aba="' + x[0] + '" class="' + (aba === x[0] ? 'on' : '') + '" aria-selected="' + (aba === x[0]) + '">' + h(x[1]) + '</button>'; }).join('') + '</div></div>' +
+        '<div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>Processo</th><th>Analista</th><th>Rodada</th><th>Enviado em</th><th>Bloqueantes abertos</th><th>Justificados</th><th>Situação</th><th><span class="sr">Ações</span></th></tr></thead><tbody>' +
+        (lista.length ? lista.map(function (e) {
+          return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + '</td><td>' + h(e.analista) + '</td><td>' + e.round + '</td>' +
+            '<td>' + h(dataBR(e.submitted_at, true)) + '</td><td style="font-weight:700;color:' + (e.b_open ? 'var(--bad)' : 'var(--ok)') + '">' + e.b_open + '</td><td>' + e.justificados + '</td>' +
+            '<td>' + stCoe(e.coe_status) + (e.revisor ? '<div class="tiny muted">' + h(e.revisor) + ' · ' + h(dataBR(e.reviewed_at, true)) + '</div>' : '') + '</td>' +
+            '<td><a href="#/resultado/' + e.id + '"><b>' + (e.coe_status === 'enviado' ? 'Avaliar' : 'Abrir') + '</b></a></td></tr>';
+        }).join('') : '<tr><td colspan="8" class="muted">' + (aba === 'enviado' ? 'Nada aguardando o CoE.' : 'Nenhuma avaliação.') + '</td></tr>') +
+        '</tbody></table></div></section>');
+      bindLayout();
+      $$('[data-aba]').forEach(function (b) { b.addEventListener('click', function () { aba = b.getAttribute('data-aba'); desenhar(); }); });
+    }
+    desenhar();
+  }
+
+  /* ------------------------------ admin: orientacoes a IA ------------------------------ */
+  async function viewOrientacoes() {
+    var lista = (await api('/api/orientacoes')).orientacoes.map(function (o) { return Object.assign({}, o); });
+    function desenhar() {
+      $app.innerHTML = layout('#/admin/orientacoes',
+        '<div class="head"><div><h1>Orientações à IA</h1><p class="lead">Decisões do CoE que a IA recebe em toda análise, antes das regras. Use para corrigir interpretações erradas (ex.: uma exceção aceita, um dado que o export não traz). Também nascem da tela de avaliação, ao marcar "Guardar como orientação".</p></div>' +
+        '<button class="btn" id="add">Adicionar orientação</button></div>' +
+        '<div class="note info">Em <b>Regras</b>, informe os códigos separados por vírgula (ex.: <b>S17</b> ou <b>1.3</b>, que vale para 1.3-1, 1.3-2…). Vazio vale para todas. A orientação só é enviada quando uma dessas regras está na análise.</div>' +
+        '<section class="card flush"><div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th style="width:130px">Regras</th><th>Orientação</th><th style="width:200px">Origem</th><th style="width:80px">Ativa</th><th style="width:70px"><span class="sr">Excluir</span></th></tr></thead><tbody>' +
+        (lista.length ? lista.map(function (o, i) {
+          return '<tr><td><input type="text" data-or="' + i + '" value="' + h(o.regras) + '" placeholder="todas" style="width:110px"></td>' +
+            '<td><textarea rows="2" data-ot="' + i + '" style="width:100%">' + h(o.texto) + '</textarea></td>' +
+            '<td class="tiny muted">' + h(o.origem || '') + (o.autor ? '<br>' + h(o.autor) : '') + (o.em ? ' · ' + h(dataBR(o.em)) : '') + '</td>' +
+            '<td><label class="check"><input type="checkbox" data-oa="' + i + '"' + (o.ativa !== false ? ' checked' : '') + '>Sim</label></td>' +
+            '<td><button class="link" data-ox="' + i + '">Excluir</button></td></tr>';
+        }).join('') : '<tr><td colspan="5" class="muted">Nenhuma orientação.</td></tr>') +
+        '</tbody></table></div></section><div class="row end"><button class="btn primary" id="salvar">Salvar orientações</button></div>');
+      bindLayout();
+      $$('[data-or]').forEach(function (x) { x.addEventListener('input', function () { lista[+x.getAttribute('data-or')].regras = x.value; }); });
+      $$('[data-ot]').forEach(function (x) { x.addEventListener('input', function () { lista[+x.getAttribute('data-ot')].texto = x.value; }); });
+      $$('[data-oa]').forEach(function (x) { x.addEventListener('change', function () { lista[+x.getAttribute('data-oa')].ativa = x.checked; }); });
+      $$('[data-ox]').forEach(function (x) { x.addEventListener('click', function () { lista.splice(+x.getAttribute('data-ox'), 1); desenhar(); }); });
+      on('#add', 'click', function () { lista.unshift({ regras: '', texto: '', ativa: true, origem: 'Cadastro manual' }); desenhar(); var t = $('[data-ot="0"]'); if (t) t.focus(); });
+      on('#salvar', 'click', async function () {
+        try { lista = (await api('/api/orientacoes', { method: 'PUT', body: { orientacoes: lista } })).orientacoes; toast('Orientações salvas. Valem na próxima análise com IA.'); desenhar(); }
+        catch (e) { toast(e.message); }
+      });
+    }
+    desenhar();
+  }
+
   /* ------------------------------ admin: IA, uso e limites ------------------------------ */
   async function viewUso() {
     var dd = await Promise.all([api('/api/config'), api('/api/users'), api('/api/admin/usage')]);
@@ -791,7 +989,10 @@
       '<div class="row" style="align-items:flex-end"><label class="f" style="flex:1 1 320px">Chave da API<input type="text" readonly value="' + (dd[0].chaveConfigurada ? 'Guardada no Cloudflare (segredo OPENROUTER_API_KEY)' : 'NÃO CONFIGURADA: grave o segredo OPENROUTER_API_KEY no painel') + '"></label>' +
       '<button class="btn" id="trocar">Substituir chave</button><button class="btn dark" id="testar">Testar conexão</button></div>' +
       '<div class="note info" id="chave-info" style="display:none">Por segurança, a chave não passa pelo app. No painel do Cloudflare, abra <b>Workers &amp; Pages</b> > <b>coe-autoavaliacao</b> > <b>Settings</b> > <b>Variables and Secrets</b>, edite o segredo <b>OPENROUTER_API_KEY</b> (tipo Secret) e salve. Vale na hora; depois clique em Testar conexão.</div>' +
-      '<label class="check"><input type="checkbox" id="mask"' + (cfg.ai_mask ? ' checked' : '') + '>Mascarar IDs, URLs e e-mails antes de enviar à IA</label></fieldset>' +
+      '<label class="check"><input type="checkbox" id="mask"' + (cfg.ai_mask ? ' checked' : '') + '>Mascarar IDs, URLs e e-mails antes de enviar à IA</label>' +
+      '<label class="check"><input type="checkbox" id="iab"' + (cfg.ai_bloqueia !== false ? ' checked' : '') + '>Não conformidade apontada pela IA em regra bloqueante bloqueia o envio ' +
+      '<span class="muted small">(desmarcado: fica "A verificar" e o CoE confere)</span></label>' +
+      '<p class="small muted" style="margin:0">Para a IA seguir as decisões do CoE, cadastre em <a href="#/admin/orientacoes">Orientações à IA</a>.</p></fieldset>' +
       '<fieldset><legend>Limites de uso</legend><label class="check"><input type="checkbox" id="lim"' + (cfg.limits_enabled ? ' checked' : '') + '>Aplicar limite diário <span class="muted small">(desmarque ao usar um modelo pago sem restrição)</span></label>' +
       '<div class="grid g2"><label class="f">Por analista por dia<input type="number" min="0" id="lu" value="' + cfg.limit_user + '"></label><label class="f">Total da equipe por dia<input type="number" min="0" id="lt" value="' + cfg.limit_total + '"></label></div>' +
       '<div class="note warn">Com modelo gratuito do OpenRouter, o teto é de 50 análises por dia sem créditos (1.000 com US$ 10 em créditos), e falhas também contam. O limite do provedor reinicia às 21h (Brasília).</div></fieldset>' +
@@ -824,7 +1025,7 @@
     on('#salvar', 'click', async function () {
       try {
         await api('/api/config', { method: 'PUT', body: { ai_provider: $('#prov').value, ai_url: $('#url').value, ai_model: $('#mod').value, ai_fallback: $('#fb').value,
-          ai_mask: $('#mask').checked, limits_enabled: $('#lim').checked, limit_user: $('#lu').value, limit_total: $('#lt').value } });
+          ai_mask: $('#mask').checked, ai_bloqueia: $('#iab').checked, limits_enabled: $('#lim').checked, limit_user: $('#lu').value, limit_total: $('#lt').value } });
         toast('Configuração salva.'); S.me = null; await carregarMe(); viewUso();
       } catch (e) { toast(e.message); }
     });

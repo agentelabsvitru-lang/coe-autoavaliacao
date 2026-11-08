@@ -158,12 +158,36 @@
       if (/_label$/.test(id) || /^Flow_|^Association_/.test(id)) return;
       var g = groups[id];
       var name = groups[id + '_label'] ? groups[id + '_label'].text : g.text;
-      // Junta palavras quebradas pelo SVG ("Cli ck" -> mantemos como veio; nomes vem do texto)
       if (/^TextAnnotation/.test(id)) { annotations.push(g.text); return; }
-      els.push({ id: id, type: guessType(name), name: name });
+      var forma = shapeType(g.html);
+      if (forma === 'flow') return; // setas (rotulos Sim/Nao)
+      var tipo = forma === 'intermediate' || forma === 'unknown' ? guessType(name) : forma;
+      if (forma === 'intermediate' && tipo === 'unknown') tipo = 'milestone';
+      els.push({ id: id, type: tipo, name: name });
     });
-    // Rotulos de saidas de gateway (ex.: Sim, Nao) ficam em elementos de seta: ignorados
     return { source: 'svg', elements: els, annotations: annotations };
+  }
+  // Tipo do elemento pela forma desenhada no SVG da Zeev
+  function shapeType(g) {
+    var formas = [];
+    walk(g, function (el) {
+      var t = localName(el);
+      if (t !== 'circle' && t !== 'rect' && t !== 'polygon') return;
+      var cls = attr(el, 'class') || '';
+      if (/djs-(hit|outline)/.test(cls)) return;
+      // ignora formas de elementos filhos (outro data-element-id)
+      var p = el.parentNode;
+      while (p && p !== g) { if (attr(p, 'data-element-id')) return; p = p.parentNode; }
+      formas.push({ t: t, r: parseFloat(attr(el, 'r')) || 0, rx: parseFloat(attr(el, 'rx')) || 0, w: parseFloat(attr(el, 'width')) || 0 });
+    });
+    if (!formas.length) return 'flow';
+    var f = formas[0];
+    if (f.t === 'polygon') return 'exclusiveGateway';
+    if (f.t === 'rect') return f.rx >= 3 ? 'task' : (f.w > 400 ? 'lane' : 'unknown');
+    var circ = formas.filter(function (x) { return x.t === 'circle'; });
+    if (circ.length === 1) return 'startEvent';
+    if (circ[1].r && circ[1].r < 12) return 'endEvent';
+    return 'intermediate';
   }
   function guessType(name) {
     if (/^(abrir e fechar|abrir|fechar)\s/i.test(name)) return 'milestone';
@@ -244,12 +268,18 @@
 
   var CHECKS = [
     { id: 'AUTO-01', rule: 'S4', sev: 'B', files: '.js', desc: 'Acento ou caractere especial literal fora de comentário',
-      run: function (P) {
+      params: { ignorar: ['[Pesquisa de satisfação]'] },
+      run: function (P, prm) {
         if (!P.scripts.length) return res('na', 'Nenhum script enviado.');
-        var out = [];
+        var ign = (prm.ignorar || []).map(key).filter(Boolean), out = [], ignoradas = 0;
         P.scripts.forEach(function (s) {
-          nonAsciiOutsideComments(s.text).forEach(function (h) { out.push(s.name + ', linha ' + h.line + ': ' + h.text); });
+          nonAsciiOutsideComments(s.text).forEach(function (h) {
+            var k = key(h.text);
+            if (ign.some(function (t) { return k.indexOf(t) >= 0; })) { ignoradas++; return; }
+            out.push(s.name + ', linha ' + h.line + ': ' + h.text);
+          });
         });
+        if (!out.length && ignoradas) return res('conforme', 'Nenhum caractere fora do ASCII em código ou string, exceto ' + ignoradas + ' linha(s) de trecho padrão liberado pelo CoE.');
         return out.length ? res('aberto', out.slice(0, 8).join(' | ') + (out.length > 8 ? ' (+' + (out.length - 8) + ')' : ''),
           'Trocar os caracteres acentuados em strings por \\uXXXX (ex.: ç = \\u00e7, ã = \\u00e3).')
           : res('conforme', 'Nenhum caractere fora do ASCII em código ou string (' + P.scripts.length + ' script(s)).');
@@ -347,7 +377,7 @@
           'Atribuir o grupo definitivo no padrão Função - Tipo/Subárea (R1).')
           : res('conforme', 'Tarefas de área com grupo próprio.');
       } },
-    { id: 'AUTO-07', rule: '1.4', sev: 'B', files: '.svg / .json', desc: 'Marco final "Abrir e Fechar Encerrado" em todos os caminhos',
+    { id: 'AUTO-07', rule: '1.4', sev: 'B', mode: 'aviso', files: '.svg / .json', desc: 'Marco final "Abrir e Fechar Encerrado" em todos os caminhos',
       run: function (P) {
         if (!P.diagram) return res('na', 'Diagrama não enviado.');
         var finais = P.diagram.elements.filter(function (e) { return /^abrir e fechar\s/i.test(e.name) && !/protocolo aberto/i.test(e.name); });
@@ -472,6 +502,8 @@
       var r;
       try { r = c.run(P, Object.assign({}, c.params || {}, (cfg[c.id] && cfg[c.id].params) || {})); }
       catch (e) { r = res('verificar', 'Erro ao conferir: ' + e.message); }
+      var modo = (cfg[c.id] && cfg[c.id].mode) || c.mode || 'bloqueia';
+      if (modo === 'aviso' && r.status === 'aberto') { r.status = 'verificar'; r.comment += ' Só aviso: definido pelo CoE como não bloqueante.'; }
       return { id: c.id, rule: c.rule, item: c.desc, origin: 'Automática', sev: (cfg[c.id] && cfg[c.id].severity) || c.sev,
         status: r.status, comment: r.comment, fix: r.fix };
     });
@@ -485,6 +517,9 @@
       .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[EMAIL]')
       .replace(/\/api\/[\w/.-]+/g, '[API]');
   }
+  var TIPOS_PT = { startEvent: 'Evento de início (círculo, não é atividade humana)', endEvent: 'Evento de fim', task: 'Atividade (retângulo)',
+    userTask: 'Atividade humana', serviceTask: 'Tarefa de serviço', scriptTask: 'Tarefa de script', businessRuleTask: 'Tarefa de regra',
+    exclusiveGateway: 'Gateway', milestone: 'Marco', timer: 'Temporizador', message: 'Evento de e-mail', link: 'Evento de link', unknown: 'Elemento' };
   // Contexto enviado a IA: so nomes, campos, anotacoes e cabecalhos (sem o codigo inteiro)
   function aiContext(P, doMask) {
     var ctx = { processo: P.processName };
@@ -502,19 +537,33 @@
       ctx.tarefasRegra = P.xls.ruleTasks.map(function (t) { return t.title; });
     }
     if (P.diagram) {
-      ctx.elementosDiagrama = P.diagram.elements.filter(function (e) { return e.name; }).map(function (e) { return e.type + ': ' + e.name; });
+      ctx.elementosDiagrama = P.diagram.elements.filter(function (e) { return e.name && e.type !== 'lane'; }).map(function (e) { return (TIPOS_PT[e.type] || e.type) + ': ' + e.name; });
+      ctx.raias = P.diagram.elements.filter(function (e) { return e.type === 'lane'; }).map(function (e) { return e.name; });
       ctx.anotacoes = P.diagram.annotations;
     }
     ctx.cabecalhosScripts = P.scripts.map(function (s) { return s.name + ': ' + firstComment(s.text).slice(0, 1200); });
     var txt = JSON.stringify(ctx, null, 1);
     return doMask ? mask(txt) : txt;
   }
-  function aiPrompt(P, rules, doMask) {
+  // orientacoes: [{ regras: 'S17, 1.3', texto }] decisoes do CoE que prevalecem sobre a leitura literal das regras
+  function aiPrompt(P, rules, doMask, orientacoes) {
     var sys = 'Você é o avaliador do Centro de Excelência (CoE) da Vitru para fluxos na plataforma Zeev. ' +
       'Avalie SOMENTE as regras listadas, com base SOMENTE no contexto do processo enviado. Não invente regras. ' +
-      'Quando o contexto não permitir concluir, use "inconclusivo". Responda em português do Brasil, apenas com JSON válido.';
-    var user = 'REGRAS A AVALIAR (código | severidade | texto):\n' +
-      rules.map(function (r) { return r.code + ' | ' + r.sev + ' | ' + r.text; }).join('\n') +
+      'Marque "nao_conforme" só com evidência explícita no contexto, citando o nome do elemento ou campo. ' +
+      'Falta de informação no contexto não é não conformidade: use "inconclusivo". ' +
+      'Aplique cada regra só ao tipo de elemento a que ela se refere (ex.: regra de atividade humana não vale para evento de início, marco ou gateway). ' +
+      'As ORIENTAÇÕES DO CoE prevalecem sobre a leitura literal das regras. Responda em português do Brasil, apenas com JSON válido.';
+    var codigos = {}; rules.forEach(function (r) { codigos[r.code] = 1; });
+    var ori = (orientacoes || []).filter(function (o) {
+      if (o.ativa === false || !norm(o.texto)) return false;
+      var rs = splitList(o.regras);
+      // sem regra = vale sempre; "1.3" vale para 1.3-1, 1.3-2...
+      return !rs.length || rs.some(function (c) { return codigos[c] || Object.keys(codigos).some(function (k) { return k.indexOf(c + '-') === 0; }); });
+    });
+    var user = (ori.length ? 'ORIENTAÇÕES DO CoE (decisões já tomadas; siga sempre):\n' +
+      ori.map(function (o) { return '- ' + (norm(o.regras) ? '[' + norm(o.regras) + '] ' : '') + norm(o.texto); }).join('\n') + '\n\n' : '') +
+      'REGRAS A AVALIAR (código | severidade | seção | texto):\n' +
+      rules.map(function (r) { return r.code + ' | ' + r.sev + ' | ' + (r.section || r.chapter || '') + ' | ' + r.text; }).join('\n') +
       '\n\nCONTEXTO DO PROCESSO:\n' + aiContext(P, doMask) +
       '\n\nResponda neste formato JSON, um item por regra listada:\n' +
       '{"itens":[{"codigo":"F4","status":"conforme|nao_conforme|inconclusivo|nao_aplicavel","comentario":"o que foi encontrado, citando nomes do fluxo","correcao":"o que fazer, se não conforme"}],' +
@@ -532,7 +581,9 @@
 
   /* ------------------------------ resultado ------------------------------ */
   // rules: regras do manual vigente [{code, text, sev, aval: auto|ia|checklist|nao}]
-  function buildItems(autoItems, rules, aiAnswer) {
+  // opts.iaBloqueia === false: nao conformidade da IA fica "A verificar" (nao bloqueia sozinha)
+  function buildItems(autoItems, rules, aiAnswer, opts) {
+    opts = opts || {};
     var items = autoItems.slice();
     var autoRules = {};
     autoItems.forEach(function (a) { autoRules[a.rule] = true; });
@@ -544,9 +595,10 @@
       } else if (r.aval === 'ia' && !autoRules[r.code]) {
         var a = aiMap[r.code];
         if (aiAnswer) {
-          items.push({ id: r.code, rule: r.code, item: r.text, origin: 'IA', sev: r.sev,
-            status: a ? (AI_STATUS[key(a.status).replace(/\s/g, '_')] || 'verificar') : 'verificar',
-            comment: a ? norm(a.comentario || a.comment) : 'A IA não avaliou esta regra.', fix: a ? norm(a.correcao || a.fix) : '' });
+          var stt = a ? (AI_STATUS[key(a.status).replace(/\s/g, '_')] || 'verificar') : 'verificar';
+          var com = a ? norm(a.comentario || a.comment) : 'A IA não avaliou esta regra.';
+          if (stt === 'aberto' && opts.iaBloqueia === false) { stt = 'verificar'; com = 'IA apontou possível não conformidade: ' + com; }
+          items.push({ id: r.code, rule: r.code, item: r.text, origin: 'IA', sev: r.sev, status: stt, comment: com, fix: a ? norm(a.correcao || a.fix) : '' });
         } else {
           items.push({ id: r.code, rule: r.code, item: r.text, origin: 'IA', sev: r.sev, status: 'verificar', comment: 'Avaliação por IA não executada nesta rodada.', fix: '' });
         }
@@ -596,7 +648,7 @@
       text = norm(text);
       if (!text || seen[code]) return;
       seen[code] = 1;
-      rules.push({ code: code, text: text, sev: sev, chapter: chapter, aval: defaultAval(code) });
+      rules.push({ code: code, text: text, sev: sev, chapter: chapter, section: sectionTitle.slice(0, 80), aval: defaultAval(code) });
     }
     function autoCode() { var s = section || chapter || 'X'; counter[s] = (counter[s] || 0) + 1; return s + '-' + counter[s]; }
     var nodes = [];
@@ -608,14 +660,22 @@
       var t = localName(el).toLowerCase();
       if (t !== 'table' && el.parentNode && closestLocal(el, 'table')) return;
       if (t === 'table') {
+        var cab = null;
         rowsOf(el).forEach(function (cells) {
           if (cells.length < 2) return;
           var sev = norm(cells[cells.length - 1]).toUpperCase();
-          if (sev !== 'B' && sev !== 'R') return;
+          if (sev !== 'B' && sev !== 'R') { if (!cab) cab = cells.map(norm); return; }
           var first = norm(cells[0]);
           var isCode = /^[A-Z]{1,2}\d{1,3}$/.test(first);
-          var body = cells.slice(isCode ? 1 : 0, cells.length - 1).map(norm).filter(Boolean).join(' — ');
-          add(isCode ? first : autoCode(), body, sev);
+          var ini = isCode ? 1 : 0;
+          var partes = [];
+          cells.slice(ini, cells.length - 1).forEach(function (c, j) {
+            c = norm(c); if (!c) return;
+            var rot = cab && cab.length === cells.length ? cab[ini + j] : '';
+            // rotulo da coluna, exceto quando e o proprio texto da regra
+            partes.push(rot && !/^(regra|descri[cç][aã]o|crit[eé]rio|requisito)$/i.test(rot) ? rot + ': ' + c : c);
+          });
+          add(isCode ? first : autoCode(), partes.join(' — '), sev);
         });
         return;
       }
@@ -666,7 +726,7 @@
       return { id: c.id, rule: c.rule, sev: c.sev, files: c.files, desc: c.desc, params: c.params || {} };
     }),
     aiPrompt: aiPrompt, parseAiAnswer: parseAiAnswer, buildItems: buildItems, totals: totals, mask: mask,
-    parseManualHtml: parseManualHtml, diffRules: diffRules, defaultAval: defaultAval, key: key, norm: norm,
+    TIPOS_PT: TIPOS_PT, parseManualHtml: parseManualHtml, diffRules: diffRules, defaultAval: defaultAval, key: key, norm: norm,
     _internal: { nonAsciiOutsideComments: nonAsciiOutsideComments, parseZeevXls: parseZeevXls, parseSvg: parseSvg }
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
