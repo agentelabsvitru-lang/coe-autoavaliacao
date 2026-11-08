@@ -1,0 +1,27 @@
+# App de Autoavaliacao CoE Zeev - configuracao do Cloudflare Workers
+name = "coe-autoavaliacao"
+main = "src/worker.js"
+compatibility_date = "2026-11-01"
+
+# Telas do app (pasta public). Pedidos para /api/* que nao sao arquivos vao para o worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# Banco de dados D1 (Parte 2 do guia): cole o Database ID abaixo
+[[d1_databases]]
+binding = "DB"
+database_name = "coe-autoavaliacao"
+database_id = "COLE_AQUI_O_DATABASE_ID_DO_D1"
+
+# Armazenamento KV dos prints e logos (Parte 2 do guia): cole o ID abaixo
+[[kv_namespaces]]
+binding = "PRINTS"
+id = "COLE_AQUI_O_ID_DO_KV"
+
+[observability]
+enabled = true
+
+# Segredos (NAO ficam neste arquivo; gravar no painel em Settings > Variables and Secrets):
+#   OPENROUTER_API_KEY  chave da IA (OpenRouter ou outro provedor configurado no app)
+#   BOOTSTRAP_TOKEN     senha temporaria para criar o primeiro administrador em /setup

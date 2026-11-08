@@ -1,0 +1,8 @@
+{
+  "name": "coe-autoavaliacao",
+  "version": "1.0.0",
+  "private": true,
+  "description": "App de Autoavaliação CoE Zeev - Vitru",
+  "scripts": { "deploy": "wrangler deploy" },
+  "devDependencies": { "wrangler": "^4.0.0" }
+}
