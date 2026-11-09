@@ -44,7 +44,8 @@ const ORIENTACOES_PADRAO = [
   ['', 'O export da Zeev não traz o tempo dos temporizadores nem os destinatários dos e-mails. Ausência desses dados no contexto não é não conformidade: use inconclusivo.'],
   ['3.7', 'Botões nativos "Enviar solicitação" (abertura) e "Concluir" são válidos para o histórico.'],
   ['R5, R6', 'Por regra de negócio o SLA é em horas corridas; "horas úteis" desligado não é não conformidade.'],
-  ['3.6', 'O modelo administrativo da pesquisa de satisfação (seção 3.6) é padrão do CoE: seus campos, script e textos não devem ser apontados.']
+  ['3.6', 'O modelo administrativo da pesquisa de satisfação (seção 3.6) é padrão do CoE: seus campos, script e textos não devem ser apontados.'],
+  ['1.3, P2', 'O pool com o nome do processo envolvendo todas as raias é aceito pelo CoE. Ele não é raia nem papel: não aplique a ele as regras de nomenclatura de raia.']
 ].map((o, i) => ({ id: 'o' + (i + 1), regras: o[0], texto: o[1], ativa: true, origem: 'Decisão inicial do CoE', em: '' }));
 
 // Colunas acrescentadas depois da primeira versao do banco (criadas sozinhas na primeira chamada)
@@ -423,9 +424,13 @@ rota('POST', '/api/manual', 'admin', async (c) => {
 });
 
 // ---- orientacoes do CoE para a IA ----
+// Orientacoes padrao novas entram sozinhas na lista salva, exceto as que o CoE excluiu
 async function lerOrientacoes(env) {
   const o = await lerConfig(env, 'orientacoes');
-  return Array.isArray(o) ? o : ORIENTACOES_PADRAO;
+  if (!Array.isArray(o)) return ORIENTACOES_PADRAO;
+  const removidas = (await lerConfig(env, 'orientacoes_removidas')) || [];
+  const ids = new Set(o.map((x) => x.id));
+  return o.concat(ORIENTACOES_PADRAO.filter((x) => !ids.has(x.id) && !removidas.includes(x.id)));
 }
 function limparOrientacao(o, autor) {
   return { id: String(o.id || 'o' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5)).slice(0, 20),
@@ -437,6 +442,8 @@ rota('PUT', '/api/orientacoes', 'admin', async (c) => {
   const b = await corpo(c.req);
   if (!Array.isArray(b.orientacoes)) throw new HttpError(400, 'Lista inválida.');
   const lista = b.orientacoes.map((o) => limparOrientacao(o, c.user.name)).filter((o) => o.texto).slice(0, 80);
+  const ids = new Set(lista.map((o) => o.id));
+  await gravarConfig(c.env, 'orientacoes_removidas', ORIENTACOES_PADRAO.map((o) => o.id).filter((id) => !ids.has(id)));
   await gravarConfig(c.env, 'orientacoes', lista);
   await logConfig(c.env, c.user.id, 'Orientações à IA atualizadas (' + lista.filter((o) => o.ativa).length + ' ativas)');
   return json({ orientacoes: lista });
@@ -558,6 +565,21 @@ rota('POST', '/api/evaluations/:id/submit', 'user', async (c) => {
   return json({ ok: true, justificados: items.filter((i) => i.just).length });
 });
 
+// Exclusao de uma rodada (so admin): apaga tambem os prints guardados
+rota('DELETE', '/api/evaluations/:id', 'admin', async (c) => {
+  const e = await c.env.DB.prepare('SELECT id, process_name, round FROM evaluations WHERE id = ?').bind(c.params.id).first();
+  if (!e) throw new HttpError(404, 'Autoavaliação não encontrada.');
+  let cursor;
+  do {
+    const l = await c.env.PRINTS.list({ prefix: 'print:' + e.id + ':', cursor });
+    await Promise.all(l.keys.map((k) => c.env.PRINTS.delete(k.name)));
+    cursor = l.list_complete ? null : l.cursor;
+  } while (cursor);
+  await c.env.DB.prepare('DELETE FROM evaluations WHERE id = ?').bind(e.id).run();
+  await logConfig(c.env, c.user.id, 'Autoavaliação #' + e.id + ' excluída (' + e.process_name + ', rodada ' + e.round + ')');
+  return json({ ok: true });
+});
+
 const DECISOES_ITEM = ['aceito', 'ressalva', 'nao_aceito'];
 const DECISOES_GERAIS = ['aprovado', 'aprovado_ressalva', 'devolvido'];
 rota('POST', '/api/evaluations/:id/review', 'admin', async (c) => {
@@ -653,7 +675,6 @@ rota('GET', '/api/report-config', 'user', async (c) => json({ report: (await ler
 rota('GET', '/api/reports', 'admin', async (c) => {
   const q = c.url.searchParams;
   const tipo = q.get('tipo') || 'processos';
-  const de = q.get('de') || '2000-01-01', ate = (q.get('ate') || '2999-12-31') + 'T23:59:59Z';
   if (tipo === 'uso') {
     const { results } = await c.env.DB.prepare(
       `SELECT u.name AS analista, u.email, COALESCE(SUM(g.count),0) AS analises, COALESCE(SUM(g.failures),0) AS falhas, COUNT(g.day) AS dias
@@ -661,19 +682,28 @@ rota('GET', '/api/reports', 'admin', async (c) => {
       .bind(q.get('de') || '2000-01-01', q.get('ate') || '2999-12-31').all();
     return json({ tipo, linhas: results });
   }
+  const { cond, args } = filtrosRelatorio(q);
+  const { results } = await c.env.DB.prepare(
+    `SELECT e.id, e.process_name, e.app_code, e.area, e.round, e.manual_version, e.created_at, e.b_open, e.r_open, e.confirm, e.ready,
+            COALESCE(e.coe_status,'rascunho') AS coe_status, u.name AS analista
+       ${tipo === 'processos' ? '' : ', e.items'}
+     FROM evaluations e JOIN users u ON u.id = e.user_id WHERE ${cond.join(' AND ')} ORDER BY e.created_at DESC LIMIT 1000`).bind(...args).all();
+  return relatorioLinhas(q, tipo, results);
+});
+function filtrosRelatorio(q, semUltima) {
+  const de = q.get('de') || '2000-01-01', ate = (q.get('ate') || '2999-12-31') + 'T23:59:59Z';
   const cond = ['e.created_at BETWEEN ? AND ?'], args = [de, ate];
   if (q.get('processo')) { cond.push('e.process_name = ?'); args.push(q.get('processo')); }
+  if (q.get('area')) { cond.push("COALESCE(NULLIF(e.area,''),'Não informada') = ?"); args.push(q.get('area')); }
   if (q.get('analista')) { cond.push('e.user_id = ?'); args.push(q.get('analista')); }
   if (q.get('manual')) { cond.push('e.manual_version = ?'); args.push(q.get('manual')); }
   if (q.get('situacao') === 'pronto') cond.push('e.ready = 1');
   if (q.get('situacao') === 'corrigir') cond.push('e.ready = 0');
   if (['rascunho', 'enviado', 'aprovado', 'aprovado_ressalva', 'devolvido'].includes(q.get('coe'))) { cond.push("COALESCE(e.coe_status,'rascunho') = ?"); args.push(q.get('coe')); }
-  if (q.get('ultima') !== '0') cond.push(`e.id = (SELECT MAX(x.id) FROM evaluations x WHERE x.user_id = e.user_id AND lower(x.process_name) = lower(e.process_name) AND COALESCE(x.app_code,'') = COALESCE(e.app_code,''))`);
-  const { results } = await c.env.DB.prepare(
-    `SELECT e.id, e.process_name, e.app_code, e.round, e.manual_version, e.created_at, e.b_open, e.r_open, e.confirm, e.ready,
-            COALESCE(e.coe_status,'rascunho') AS coe_status, u.name AS analista
-       ${tipo === 'processos' ? '' : ', e.items'}
-     FROM evaluations e JOIN users u ON u.id = e.user_id WHERE ${cond.join(' AND ')} ORDER BY e.created_at DESC LIMIT 1000`).bind(...args).all();
+  if (!semUltima && q.get('ultima') !== '0') cond.push(`e.id = (SELECT MAX(x.id) FROM evaluations x WHERE x.user_id = e.user_id AND lower(x.process_name) = lower(e.process_name) AND COALESCE(x.app_code,'') = COALESCE(e.app_code,''))`);
+  return { cond, args };
+}
+function relatorioLinhas(q, tipo, results) {
   if (tipo === 'processos') return json({ tipo, linhas: results });
   const sev = q.get('severidade'), cap = q.get('capitulo');
   const filtra = (i) => (!sev || i.sev === sev) && (!cap || capitulo(i.rule) === cap);
@@ -689,11 +719,59 @@ rota('GET', '/api/reports', 'admin', async (c) => {
   }
   const linhas = [];
   results.forEach((e) => JSON.parse(e.items).filter(filtra).forEach((i) => linhas.push({
-    processo: e.process_name, rodada: e.round, analista: e.analista, data: e.created_at, regra: i.rule, item: i.item, origem: i.origin,
+    eval_id: e.id, processo: e.process_name, rodada: e.round, analista: e.analista, data: e.created_at, regra: i.rule, item: i.item, origem: i.origin,
     severidade: i.sev, status: i.status, comentario: i.comment, justificativa: i.just || '',
     decisao_coe: i.coe ? i.coe.decisao : '', instrucao_coe: i.coe ? i.coe.instrucao : ''
   })));
   return json({ tipo: 'itens', linhas });
+}
+
+// Painel grafico: agregados das autoavaliacoes no periodo (todas as rodadas)
+rota('GET', '/api/reports/painel', 'admin', async (c) => {
+  const q = c.url.searchParams;
+  const { cond, args } = filtrosRelatorio(q, true);
+  const { results } = await c.env.DB.prepare(
+    `SELECT e.id, e.user_id, e.process_name, e.app_code, COALESCE(NULLIF(e.area,''),'Não informada') AS area, e.round, e.created_at, e.b_open, e.items,
+            COALESCE(e.coe_status,'rascunho') AS coe_status, u.name AS analista, r.name AS revisor
+     FROM evaluations e JOIN users u ON u.id = e.user_id LEFT JOIN users r ON r.id = e.reviewer_id
+     WHERE ${cond.join(' AND ')} ORDER BY e.id LIMIT 2000`).bind(...args).all();
+  const sev = q.get('severidade'), cap = q.get('capitulo');
+  const chaveProc = (e) => e.process_name.trim().toLowerCase() + '|' + (e.app_code || '');
+  const nomeProc = {}, rodadas = {}, ultima = {}, porAnalista = {}, porAvaliador = {}, porArea = {}, regras = {};
+  const somaSet = (m, k, v) => { (m[k] = m[k] || new Set()).add(v); };
+  results.forEach((e) => {
+    const p = chaveProc(e);
+    nomeProc[p] = e.process_name;
+    rodadas[p] = Math.max(rodadas[p] || 0, e.round);
+    ultima[p] = e; // ordenado por id: fica a mais recente
+    somaSet(porAnalista, e.analista, p);
+    somaSet(porArea, e.area, p);
+    if (e.revisor) somaSet(porAvaliador, e.revisor, p);
+    JSON.parse(e.items || '[]').forEach((i) => {
+      const reprovado = (i.status === 'aberto' && i.sev === 'B') || (i.coe && i.coe.decisao === 'nao_aceito');
+      if (!reprovado || (sev && i.sev !== sev) || (cap && capitulo(i.rule) !== cap)) return;
+      const k = i.rule;
+      const r = regras[k] = regras[k] || { regra: i.rule, item: i.item, ocorrencias: 0, processos: new Set() };
+      r.ocorrencias++; r.processos.add(e.process_name);
+    });
+  });
+  const ord = (m) => Object.entries(m).map(([k, v]) => ({ rotulo: k, valor: v.size })).sort((a, b) => b.valor - a.valor);
+  const situacao = {};
+  Object.values(ultima).forEach((e) => { situacao[e.coe_status] = (situacao[e.coe_status] || 0) + 1; });
+  const procs = Object.keys(rodadas);
+  const aprov = Object.values(ultima).filter((e) => e.coe_status === 'aprovado' || e.coe_status === 'aprovado_ressalva');
+  return json({
+    kpis: {
+      avaliacoes: results.length, processos: procs.length,
+      mediaRodadas: procs.length ? Math.round(procs.reduce((a, p) => a + rodadas[p], 0) / procs.length * 10) / 10 : 0,
+      aprovados: aprov.length, aguardando: situacao.enviado || 0, devolvidos: situacao.devolvido || 0
+    },
+    regras: Object.values(regras).map((r) => ({ regra: r.regra, item: r.item, ocorrencias: r.ocorrencias, processos: r.processos.size, lista: [...r.processos].slice(0, 6).join(', ') }))
+      .sort((a, b) => b.ocorrencias - a.ocorrencias).slice(0, 12),
+    rodadas: procs.map((p) => ({ rotulo: nomeProc[p], valor: rodadas[p], situacao: ultima[p].coe_status })).sort((a, b) => b.valor - a.valor).slice(0, 15),
+    analistas: ord(porAnalista), avaliadores: ord(porAvaliador), areas: ord(porArea),
+    situacao: ['rascunho', 'enviado', 'aprovado', 'aprovado_ressalva', 'devolvido'].map((k) => ({ rotulo: k, valor: situacao[k] || 0 }))
+  });
 });
 function capitulo(rule) {
   const r = String(rule || '');
@@ -704,7 +782,8 @@ rota('GET', '/api/reports/filters', 'admin', async (c) => {
   const p = await c.env.DB.prepare('SELECT DISTINCT process_name FROM evaluations ORDER BY process_name').all();
   const u = await c.env.DB.prepare('SELECT id, name FROM users ORDER BY name').all();
   const m = await c.env.DB.prepare('SELECT DISTINCT manual_version FROM evaluations ORDER BY manual_version').all();
-  return json({ processos: p.results.map((x) => x.process_name), analistas: u.results, manuais: m.results.map((x) => x.manual_version) });
+  const a = await c.env.DB.prepare("SELECT DISTINCT COALESCE(NULLIF(area,''),'Não informada') AS area FROM evaluations ORDER BY 1").all();
+  return json({ processos: p.results.map((x) => x.process_name), analistas: u.results, manuais: m.results.map((x) => x.manual_version), areas: a.results.map((x) => x.area) });
 });
 
 // ---- uso e backup (admin) ----
