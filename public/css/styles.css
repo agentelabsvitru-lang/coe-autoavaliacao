@@ -42,6 +42,7 @@ h2 { margin: 0; font-size: 17px; font-weight: 700; }
 .lead { margin: 0; font-size: 14px; color: var(--muted); max-width: 760px; line-height: 1.5; }
 .head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px; }
 .head > div { display: flex; flex-direction: column; gap: 6px; }
+.head > div.row { flex-direction: row; flex-wrap: wrap; align-items: center; }
 .back { font-size: 13px; color: var(--muted); text-decoration: none; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px; display: flex; flex-direction: column; gap: 16px; }
 .card.flush { padding: 0; gap: 0; }
@@ -206,3 +207,29 @@ td .acts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .glegend i { width: 12px; height: 12px; border-radius: 3px; }
 .glegend small { color: var(--muted); text-align: right; }
 tr.gm:hover td { background: var(--line2); }
+
+/* --- andamento no CoE e mensagens --- */
+.st-coe-em_analise { background: var(--info-bg); color: var(--info); }
+.progresso { padding: 18px 20px 14px; gap: 12px; position: relative; }
+.pg-trilho { position: absolute; left: calc(12.5% + 6px); right: calc(12.5% + 6px); top: 32px; height: 4px; background: var(--line); border-radius: 4px; }
+.pg-trilho i { display: block; height: 100%; border-radius: 4px; background: var(--info); transition: width .5s; }
+.pg-trilho i.pg-ok { background: var(--ok); } .pg-trilho i.pg-warn { background: var(--warn); } .pg-trilho i.pg-bad { background: var(--bad); }
+.pg-and { background-image: linear-gradient(90deg, var(--info) 0 85%, #7d93b0 100%) !important; animation: pgpulse 1.6s ease-in-out infinite; }
+@keyframes pgpulse { 50% { opacity: .65; } }
+@media (prefers-reduced-motion: reduce) { .pg-and { animation: none; } }
+.pg-etapas { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); position: relative; }
+.pg-etapas li { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 3px; font-size: 13px; padding: 0 4px; }
+.pg-ponto { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: #fff; border: 2px solid var(--line); color: var(--muted); margin-bottom: 4px; }
+.pg-etapas li.feito .pg-ponto { background: var(--info); border-color: var(--info); color: #fff; }
+.pg-etapas li.atual .pg-ponto { border-color: var(--info); color: var(--info); box-shadow: 0 0 0 4px var(--info-bg); }
+.pg-etapas li.feito.ok .pg-ponto { background: var(--ok); border-color: var(--ok); }
+.pg-etapas li.feito.warn .pg-ponto { background: var(--warn); border-color: var(--warn); }
+.pg-etapas li.feito.bad .pg-ponto { background: var(--bad); border-color: var(--bad); }
+.pg-etapas li.futuro b { color: var(--muted); font-weight: 600; }
+.pg-etapas small { color: var(--muted); font-size: 12px; }
+dialog.msg { border: 0; border-radius: 14px; padding: 24px 26px; max-width: 520px; width: calc(100% - 32px); box-shadow: 0 20px 60px rgba(0,0,0,.25); border-top: 6px solid var(--info); }
+dialog.msg.ok { border-top-color: var(--ok); } dialog.msg.warn { border-top-color: var(--warn); } dialog.msg.bad { border-top-color: var(--bad); }
+dialog.msg::backdrop { background: rgba(20, 24, 31, .45); }
+dialog.msg h2 { margin: 0 0 10px; font-size: 19px; }
+.msg-corpo p { margin: 0 0 10px; line-height: 1.5; }
+.aviso-coe a { font-weight: 600; }
