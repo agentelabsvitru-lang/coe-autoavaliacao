@@ -233,3 +233,25 @@ dialog.msg::backdrop { background: rgba(20, 24, 31, .45); }
 dialog.msg h2 { margin: 0 0 10px; font-size: 19px; }
 .msg-corpo p { margin: 0 0 10px; line-height: 1.5; }
 .aviso-coe a { font-weight: 600; }
+
+/* --- janela de andamento e falhas de comunicacao --- */
+.espera { position: fixed; inset: 0; z-index: 80; background: rgba(20, 24, 31, .45); display: grid; place-items: center; padding: 16px; }
+.espera-card { background: #fff; border-radius: 14px; width: min(560px, 100%); padding: 24px 26px; box-shadow: 0 20px 60px rgba(0,0,0,.25); border-top: 6px solid var(--info); display: flex; flex-direction: column; gap: 14px; }
+.espera-card.com-erro { border-top-color: var(--bad); }
+.espera-card h2 { margin: 0; font-size: 19px; }
+.esp-passos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.esp-passos li { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: start; font-size: 14px; line-height: 1.45; }
+.esp-i { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.esp-passos .done .esp-i { background: var(--ok); color: #fff; }
+.esp-passos .err .esp-i { background: var(--bad); color: #fff; }
+.esp-passos .warn .esp-i { background: var(--warn); color: #fff; }
+.esp-passos .run { font-weight: 600; }
+.esp-t { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--info-bg); border-top-color: var(--info); animation: gira .8s linear infinite; display: block; }
+@keyframes gira { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
+.esp-dica:empty { display: none; }
+.esp-dica { margin: 0; }
+.esp-erro { display: block; color: #5c1a1a; background: var(--bad-bg); padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+.esp-acoes:empty { display: none; }
+#offline { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90; background: var(--bad); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; font-weight: 600; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
