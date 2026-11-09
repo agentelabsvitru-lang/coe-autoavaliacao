@@ -544,6 +544,11 @@
     if (P.diagram) {
       ctx.elementosDiagrama = P.diagram.elements.filter(function (e) { return e.name && e.type !== 'lane' && e.type !== 'pool'; }).map(function (e) { return (TIPOS_PT[e.type] || e.type) + ': ' + e.name; });
       ctx.raias = P.diagram.elements.filter(function (e) { return e.type === 'lane'; }).map(function (e) { return e.name; });
+      // gateway + campo de decisao (mesmo rotulo) e suas opcoes: a IA decide se o "?" se aplica
+      if (P.xls) ctx.gateways = P.diagram.elements.filter(function (e) { return e.type === 'exclusiveGateway' && e.name; }).map(function (g) {
+        var f = P.xls.fields.filter(function (x) { return key(x.name).replace(/\?$/, '') === key(g.name).replace(/\?$/, ''); })[0];
+        return f ? g.name + ' → campo ' + f.id + ' (' + f.type + (f.items ? '; opções: ' + f.items : '') + ')' : g.name + ' → campo de decisão não identificado';
+      });
       var pool = P.diagram.elements.filter(function (e) { return e.type === 'pool'; })[0];
       if (pool) ctx.pool = pool.name + ' (pool: nome do processo envolvendo as raias; não é raia nem papel)';
       ctx.anotacoes = P.diagram.annotations;
