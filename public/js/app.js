@@ -381,7 +381,7 @@
         '<div class="head"><div><a class="back" href="' + (revisando ? '#/admin/avaliacoes">‹ Avaliações recebidas' : '#/historico">‹ Minhas autoavaliações') + '</a><h1>' + h(ev.process_name) + ' · rodada ' + ev.round + '</h1>' +
         '<p class="lead">' + [ev.app_code ? 'App ' + h(ev.app_code) : '', ev.flow_version ? 'versão ' + h(ev.flow_version) : '', h(dataBR(ev.created_at, true)),
           ev.manual_version ? 'Manual v' + h(ev.manual_version) : 'sem manual', ev.with_ai ? 'com IA (' + h(ev.model) + ')' : 'sem IA', dono ? '' : 'analista: ' + h(ev.analista)].filter(Boolean).join(' · ') + '</p><div>' + stCoe(ev.coe_status) + '</div></div>' +
-        '<div class="row"><button class="btn" id="xls">Exportar Excel</button><button class="btn" id="pdf">Exportar PDF</button>' + (dono ? '<a class="btn primary" href="#/nova">Nova rodada</a>' : '') + '</div></div>' +
+        '<div class="row">' + (admin ? '<button class="btn danger" id="excluir">Excluir</button>' : '') + '<button class="btn" id="xls">Exportar Excel</button><button class="btn" id="pdf">Exportar PDF</button>' + (dono ? '<a class="btn primary" href="#/nova">Nova rodada</a>' : '') + '</div></div>' +
         bannerHtml(t) +
         (ev.summary && ev.summary.avisoIA ? '<div class="note warn">' + h(ev.summary.avisoIA) + '</div>' : '') +
         '<div class="grid g4"><div class="tile"><span>Bloqueantes abertos</span><b style="color:var(--bad)">' + t.bAbertos + '</b><small>de ' + nB + ' avaliados</small></div>' +
@@ -424,6 +424,7 @@
       on('#rsalvar', 'click', registrarDecisao);
       on('#enviar', 'click', enviar);
       on('#xls', 'click', function () { exportarAvaliacao(ev, 'xlsx'); });
+      on('#excluir', 'click', async function () { if (await excluirAvaliacao(ev.id)) { await carregarMe(); go(revisando ? '#/admin/avaliacoes' : '#/historico'); } });
       on('#pdf', 'click', function () { exportarAvaliacao(ev, 'pdf'); });
     }
     // Atualiza so o contador e o botao, sem redesenhar (mantem o foco no campo)
@@ -784,6 +785,7 @@
 
   /* ------------------------------ admin: relatorios ------------------------------ */
   var TIPOS = {
+    painel: { nome: 'Painel gráfico', cols: [] },
     processos: { nome: 'Autoavaliações por processo', cols: [['process_name', 'Processo'], ['app_code', 'App'], ['analista', 'Analista'], ['round', 'Rodada'], ['created_at', 'Data'], ['manual_version', 'Manual'], ['b_open', 'Bloqueantes abertos'], ['r_open', 'Recomendados abertos'], ['confirm', 'A confirmar'], ['ready', 'Situação'], ['coe_status', 'Situação no CoE']] },
     regras: { nome: 'Não conformidades mais frequentes', cols: [['regra', 'Regra'], ['item', 'Item'], ['severidade', 'Sev.'], ['ocorrencias', 'Ocorrências'], ['processos', 'Processos']] },
     uso: { nome: 'Uso da IA por analista', cols: [['analista', 'Analista'], ['email', 'E-mail'], ['analises', 'Análises'], ['falhas', 'Falhas'], ['dias', 'Dias com uso']] },
@@ -802,7 +804,7 @@
     var cfgAll = (await api('/api/config')).config;
     var rep = cfgAll.report;
     var hoje = new Date(), ini = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
-    var f = { tipo: 'processos', de: ini.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), processo: '', analista: '', situacao: '', coe: '', severidade: '', capitulo: '', manual: '', ultima: '1' };
+    var f = { tipo: 'painel', area: '', de: ini.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), processo: '', analista: '', situacao: '', coe: '', severidade: '', capitulo: '', manual: '', ultima: '1' };
     var dados = { linhas: [] };
     function opt(v, t, sel) { return '<option value="' + h(v) + '"' + (v === sel ? ' selected' : '') + '>' + h(t) + '</option>'; }
     $app.innerHTML = layout('#/admin/relatorios',
@@ -813,15 +815,16 @@
       '<label class="f">Período de<input type="date" id="de" value="' + f.de + '"></label><label class="f">até<input type="date" id="ate" value="' + f.ate + '"></label>' +
       '<label class="f">Processo<select id="processo">' + opt('', 'Todos', '') + filtros.processos.map(function (p) { return opt(p, p, ''); }).join('') + '</select></label>' +
       '<label class="f">Analista<select id="analista">' + opt('', 'Todos', '') + filtros.analistas.map(function (a) { return opt(String(a.id), a.name, ''); }).join('') + '</select></label>' +
+      '<label class="f">Área responsável<select id="area">' + opt('', 'Todas', '') + (filtros.areas || []).map(function (a) { return opt(a, a, ''); }).join('') + '</select></label>' +
       '<label class="f">Situação<select id="situacao">' + opt('', 'Todas', '') + opt('corrigir', 'Corrigir antes do CoE', '') + opt('pronto', 'Pronto para o CoE', '') + '</select></label>' +
       '<label class="f">Situação no CoE<select id="coe">' + opt('', 'Todas', '') + Object.keys(COE_ST).map(function (k) { return opt(k, COE_ST[k], ''); }).join('') + '</select></label>' +
       '<label class="f">Severidade<select id="severidade">' + opt('', 'Bloqueantes e recomendados', '') + opt('B', 'Só bloqueantes', '') + opt('R', 'Só recomendados', '') + '</select></label>' +
       '<label class="f">Capítulo do manual<select id="capitulo">' + opt('', 'Todos', '') + ['1. Modelagem', '2. Formulários', '3. Scripts e estilos', '4. Integrações', '5. Responsáveis e SLA', '6. E-mails', '7. Publicação'].map(function (c) { return opt(c[0], c, ''); }).join('') + '</select></label></div>' +
       '<div class="row"><label class="check small"><input type="checkbox" id="ultima" checked>Só a última rodada de cada processo</label>' +
       '<label class="f" style="flex-direction:row;align-items:center">Versão do manual<select id="manual" style="width:auto">' + opt('', 'Todas', '') + filtros.manuais.filter(Boolean).map(function (m) { return opt(m, 'v' + m, ''); }).join('') + '</select></label>' +
-      '<button class="btn dark" id="aplicar">Aplicar</button></div><p class="tiny muted" style="margin:0">Severidade e capítulo valem para "Não conformidades" e "Detalhe dos itens".</p></section>' +
-      '<div class="grid g4" id="tiles"></div>' +
-      '<section class="card flush"><div class="card-head"><h2 id="rtit"></h2><span class="small muted">Pré-visualização do que será exportado</span></div><div class="tbl-wrap" id="rtab"></div></section>' +
+      '<button class="btn dark" id="aplicar">Aplicar</button></div><p class="tiny muted" style="margin:0">Severidade e capítulo valem para o painel, "Não conformidades" e "Detalhe dos itens". O painel considera todas as rodadas do período.</p></section>' +
+      '<div class="grid g4" id="tiles"></div><div id="painel" class="painel"></div><div class="ctip" id="ctip" role="tooltip"></div>' +
+      '<section class="card flush" id="rcard"><div class="card-head"><h2 id="rtit"></h2><span class="small muted">Pré-visualização do que será exportado</span></div><div class="tbl-wrap" id="rtab"></div></section>' +
       '<section class="card"><div><h2>Configurar relatório</h2><p class="small muted" style="margin:4px 0 0">Vale para todas as exportações em PDF e Excel, inclusive o relatório que o analista gera para o CoE.</p></div>' +
       '<div class="row" style="align-items:flex-start;gap:24px"><div style="flex:1 1 420px;min-width:0;display:flex;flex-direction:column;gap:16px"><div class="grid g2">' +
       [1, 2].map(function (n) {
@@ -844,19 +847,36 @@
       '<div class="row end"><button class="btn primary" id="rsave">Salvar configuração</button></div></section>');
     bindLayout();
     function lerFiltros() {
-      ['tipo', 'de', 'ate', 'processo', 'analista', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { f[k] = $('#' + k).value; });
+      ['tipo', 'de', 'ate', 'processo', 'analista', 'area', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { f[k] = $('#' + k).value; });
       f.ultima = $('#ultima').checked ? '1' : '0';
     }
     async function carregar() {
       lerFiltros();
       var q = Object.keys(f).filter(function (k) { return f[k] !== ''; }).map(function (k) { return k + '=' + encodeURIComponent(f[k]); }).join('&');
+      if (f.tipo === 'painel') {
+        var pn = await api('/api/reports/painel?' + q);
+        dados = { tipo: 'painel', painel: pn, linhas: [] };
+        $('#rcard').style.display = 'none';
+        desenharPainel(pn);
+        return;
+      }
+      $('#rcard').style.display = ''; $('#painel').innerHTML = '';
       dados = await api('/api/reports?' + q);
       var T = TIPOS[dados.tipo];
+      var acoes = dados.tipo === 'processos' || dados.tipo === 'itens';
       $('#rtit').textContent = T.nome;
-      $('#rtab').innerHTML = '<table class="tbl" style="min-width:860px"><thead><tr>' + T.cols.map(function (c) { return '<th>' + h(c[1]) + '</th>'; }).join('') + '</tr></thead><tbody>' +
-        (dados.linhas.length ? dados.linhas.slice(0, 200).map(function (l) { return '<tr>' + T.cols.map(function (c) { return '<td>' + h(celula(c[0], l[c[0]])) + '</td>'; }).join('') + '</tr>'; }).join('')
-          : '<tr><td colspan="' + T.cols.length + '" class="muted">Nenhum registro com esses filtros.</td></tr>') + '</tbody></table>' +
+      $('#rtab').innerHTML = '<table class="tbl" style="min-width:860px"><thead><tr>' + (acoes ? '<th>Avaliação</th>' : '') + T.cols.map(function (c) { return '<th>' + h(c[1]) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        (dados.linhas.length ? dados.linhas.slice(0, 200).map(function (l) {
+          var id = l.eval_id || l.id;
+          return '<tr>' + (acoes ? '<td class="acoes-rel"><a href="#/resultado/' + id + '">Abrir</a>' + (dados.tipo === 'processos' ? ' · <button class="link" data-rpdf="' + id + '">PDF</button> · <button class="link" data-rxls="' + id + '">Excel</button><br><button class="link danger" data-rdel="' + id + '">Excluir</button>' : '') + '</td>' : '') +
+            T.cols.map(function (c) { return '<td>' + h(celula(c[0], l[c[0]])) + '</td>'; }).join('') + '</tr>'; }).join('')
+          : '<tr><td colspan="' + (T.cols.length + (acoes ? 1 : 0)) + '" class="muted">Nenhum registro com esses filtros.</td></tr>') + '</tbody></table>' +
         (dados.linhas.length > 200 ? '<div class="tbl-foot">Mostrando 200 de ' + dados.linhas.length + '; a exportação leva todos.</div>' : '');
+      $$('[data-rpdf]').forEach(function (b) { b.addEventListener('click', function () { baixarAvaliacao(b.getAttribute('data-rpdf'), 'pdf'); }); });
+      $$('[data-rxls]').forEach(function (b) { b.addEventListener('click', function () { baixarAvaliacao(b.getAttribute('data-rxls'), 'xlsx'); }); });
+      $$('[data-rdel]').forEach(function (b) { b.addEventListener('click', async function () {
+        if (await excluirAvaliacao(b.getAttribute('data-rdel'))) carregar().catch(function (e) { toast(e.message); });
+      }); });
       var L = dados.linhas, tiles;
       if (dados.tipo === 'processos') tiles = [['Autoavaliações listadas', L.length], ['Processos', new Set(L.map(function (x) { return x.process_name.toLowerCase(); })).size],
         ['Prontos para o CoE', L.filter(function (x) { return x.ready; }).length], ['Bloqueantes abertos (soma)', L.reduce(function (a, x) { return a + x.b_open; }, 0)]];
@@ -866,26 +886,98 @@
       else tiles = [['Itens', L.length], ['Abertos', L.filter(function (x) { return x.status === 'aberto'; }).length], ['A confirmar', L.filter(function (x) { return x.status === 'confirmar'; }).length], ['Processos', new Set(L.map(function (x) { return x.processo; })).size]];
       $('#tiles').innerHTML = tiles.map(function (t) { return '<div class="tile"><span>' + h(t[0]) + '</span><b>' + t[1] + '</b></div>'; }).join('');
     }
+    // ---------- painel grafico ----------
+    var COR_COE = { rascunho: '#8A94A3', enviado: '#33475F', aprovado: '#1E6B34', aprovado_ressalva: '#B07A00', devolvido: '#A11A1A' };
+    function grafico(id, titulo, sub, linhas, unidade) {
+      var max = Math.max.apply(null, linhas.map(function (l) { return l.valor; }).concat([1]));
+      return '<section class="card chart"><div><h2>' + h(titulo) + '</h2><p class="small muted" style="margin:4px 0 0">' + h(sub) + '</p></div>' +
+        (linhas.length && linhas.some(function (l) { return l.valor; }) ? '<div class="hbars">' + linhas.map(function (l, i) {
+          var tag = l.filtro ? 'button type="button"' : 'div';
+          return '<' + tag + ' class="hb' + (l.filtro ? ' clic' : '') + '" data-g="' + id + '" data-i="' + i + '">' +
+            '<span class="hb-l" title="' + h(l.rotulo) + '">' + h(l.rotulo) + '</span>' +
+            '<span class="hb-t"><i style="width:' + Math.max(l.valor ? 1.5 : 0, l.valor / max * 100) + '%' + (l.cor ? ';background:' + l.cor : '') + '"></i></span>' +
+            '<span class="hb-v">' + l.valor + '</span></' + (l.filtro ? 'button' : 'div') + '>';
+        }).join('') + '</div>' : '<p class="muted small">Sem dados no período.</p>') +
+        (unidade ? '<p class="tiny muted" style="margin:0">' + h(unidade) + '</p>' : '') + '</section>';
+    }
+    var series = {};
+    function desenharPainel(pn) {
+      var k = pn.kpis;
+      $('#tiles').innerHTML = [['Autoavaliações no período', k.avaliacoes, 'todas as rodadas'], ['Processos', k.processos, k.mediaRodadas + ' rodada(s) em média'],
+        ['Aprovados pelo CoE', k.aprovados, 'inclui com ressalva'], ['Aguardando CoE', k.aguardando, k.devolvidos + ' devolvido(s)']].map(function (t) {
+        return '<div class="tile"><span>' + h(t[0]) + '</span><b>' + t[1] + '</b><small>' + h(t[2]) + '</small></div>'; }).join('');
+      var idAnalista = {}; filtros.analistas.forEach(function (a) { idAnalista[a.name] = String(a.id); });
+      series = {
+        regras: pn.regras.map(function (r) { return { rotulo: r.regra + ' · ' + r.item, valor: r.ocorrencias,
+          tip: [r.regra + (r.item ? ' – ' + r.item : ''), r.ocorrencias + ' reprovação(ões) em ' + r.processos + ' processo(s)', r.lista] }; }),
+        rodadas: pn.rodadas.map(function (r) { return { rotulo: r.rotulo, valor: r.valor, tip: [r.rotulo, r.valor + ' rodada(s)', 'Situação: ' + COE_ST[r.situacao], 'Clique para ver as rodadas'],
+          filtro: { processo: r.rotulo, tipo: 'processos', ultima: false } }; }),
+        situacao: pn.situacao.map(function (r) { return { rotulo: COE_ST[r.rotulo], valor: r.valor, cor: COR_COE[r.rotulo], tip: [COE_ST[r.rotulo], r.valor + ' processo(s) na última rodada', 'Clique para listar'],
+          filtro: { coe: r.rotulo, tipo: 'processos', ultima: true } }; }),
+        analistas: pn.analistas.map(function (r) { return { rotulo: r.rotulo, valor: r.valor, tip: [r.rotulo, r.valor + ' processo(s) avaliado(s)', 'Clique para filtrar'],
+          filtro: idAnalista[r.rotulo] ? { analista: idAnalista[r.rotulo], tipo: 'painel' } : null }; }),
+        avaliadores: pn.avaliadores.map(function (r) { return { rotulo: r.rotulo, valor: r.valor, tip: [r.rotulo, r.valor + ' processo(s) com decisão do CoE'] }; }),
+        areas: pn.areas.map(function (r) { return { rotulo: r.rotulo, valor: r.valor, tip: [r.rotulo, r.valor + ' processo(s)', 'Clique para filtrar'], filtro: { area: r.rotulo, tipo: 'painel' } }; })
+      };
+      $('#painel').innerHTML =
+        grafico('regras', 'Itens mais reprovados', 'Regras com bloqueante aberto ou justificativa não aceita, somando todas as rodadas', series.regras, 'Passe o mouse para ver em quais processos.') +
+        '<div class="grid g2">' +
+        grafico('rodadas', 'Rodadas por processo', 'Quantas rodadas cada processo precisou', series.rodadas) +
+        grafico('situacao', 'Situação no CoE', 'Última rodada de cada processo', series.situacao) +
+        grafico('analistas', 'Processos por analista', 'Processos distintos avaliados', series.analistas) +
+        grafico('avaliadores', 'Processos por avaliador do CoE', 'Processos com decisão registrada', series.avaliadores) +
+        '</div>' + grafico('areas', 'Processos por área responsável', 'Processos distintos por área informada na autoavaliação', series.areas);
+      var tip = $('#ctip');
+      $$('.hb').forEach(function (el) {
+        var l = series[el.getAttribute('data-g')][+el.getAttribute('data-i')];
+        el.addEventListener('mousemove', function (ev) {
+          tip.innerHTML = l.tip.filter(Boolean).map(function (t, i) { return i ? '<span>' + h(t) + '</span>' : '<b>' + h(t) + '</b>'; }).join('');
+          tip.classList.add('on');
+          var x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8), y = ev.clientY + 14;
+          if (y + tip.offsetHeight > window.innerHeight - 8) y = ev.clientY - tip.offsetHeight - 10;
+          tip.style.left = x + 'px'; tip.style.top = y + 'px';
+        });
+        el.addEventListener('mouseleave', function () { tip.classList.remove('on'); });
+        if (l.filtro) el.addEventListener('click', function () {
+          tip.classList.remove('on');
+          Object.keys(l.filtro).forEach(function (k) { if (k === 'ultima') $('#ultima').checked = l.filtro.ultima; else $('#' + k).value = l.filtro[k]; });
+          carregar().catch(function (e) { toast(e.message); });
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+      });
+    }
     function metaFiltros() {
       var p = ['Período: ' + dataBR(f.de + 'T12:00:00Z') + ' a ' + dataBR(f.ate + 'T12:00:00Z')];
       if (f.processo) p.push('Processo: ' + f.processo);
       if (f.analista) p.push('Analista: ' + $('#analista').selectedOptions[0].textContent);
+      if (f.area) p.push('Área: ' + f.area);
       if (f.situacao) p.push('Situação: ' + $('#situacao').selectedOptions[0].textContent);
       if (f.coe) p.push('No CoE: ' + COE_ST[f.coe]);
       if (f.severidade) p.push($('#severidade').selectedOptions[0].textContent);
       if (f.capitulo) p.push('Capítulo ' + $('#capitulo').selectedOptions[0].textContent);
       if (f.manual) p.push('Manual v' + f.manual);
-      return [p.join(' · '), 'Gerado em ' + dataBR(new Date().toISOString(), true) + ' por ' + S.me.user.name + ' · ' + dados.linhas.length + ' registro(s)'];
+      return [p.join(' · '), 'Gerado em ' + dataBR(new Date().toISOString(), true) + ' por ' + S.me.user.name + (dados.tipo === 'painel' ? ' · ' + dados.painel.kpis.avaliacoes + ' autoavaliação(ões) no período' : ' · ' + dados.linhas.length + ' registro(s)')];
+    }
+    // No painel, cada grafico vira uma tabela na exportacao
+    function secoesPainel() {
+      var nomes = { regras: 'Itens mais reprovados', rodadas: 'Rodadas por processo', situacao: 'Situação no CoE', analistas: 'Processos por analista', avaliadores: 'Processos por avaliador', areas: 'Processos por área' };
+      return Object.keys(nomes).map(function (k) {
+        if (k === 'regras') return { titulo: nomes[k], nome: nomes[k], colunas: ['Regra', 'Item', 'Reprovações', 'Processos'], linhas: dados.painel.regras.map(function (r) { return [r.regra, r.item, r.ocorrencias, r.lista]; }), larguras: [12, 60, 14, 50] };
+        return { titulo: nomes[k], nome: nomes[k], colunas: [k === 'rodadas' ? 'Processo' : k === 'situacao' ? 'Situação' : k === 'areas' ? 'Área' : 'Nome', 'Quantidade'],
+          linhas: series[k].map(function (l) { return [l.rotulo, l.valor]; }), larguras: [50, 14] };
+      });
     }
     function tabela() { var T = TIPOS[dados.tipo]; return { colunas: T.cols.map(function (c) { return c[1]; }), linhas: dados.linhas.map(function (l) { return T.cols.map(function (c) { return celula(c[0], l[c[0]]); }); }) }; }
     on('#aplicar', 'click', function () { carregar().catch(function (e) { toast(e.message); }); });
     on('#tipo', 'change', function () { carregar().catch(function (e) { toast(e.message); }); });
-    on('#limpar', 'click', function () { ['processo', 'analista', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { $('#' + k).value = ''; }); $('#ultima').checked = true; carregar(); });
+    on('#limpar', 'click', function () { ['processo', 'analista', 'area', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { $('#' + k).value = ''; }); $('#ultima').checked = true; carregar(); });
     on('#rp', 'click', async function () {
+      if (dados.tipo === 'painel') { try { toast('Gerando o PDF…'); await gerarPdf({ titulo: rep.title + ' – Painel', linhasMeta: metaFiltros(), secoes: secoesPainel().map(function (x) { return { titulo: x.titulo, colunas: x.colunas, linhas: x.linhas }; }) }, 'painel-' + f.de + '-' + f.ate); } catch (e) { toast(e.message); } return; }
       try { toast('Gerando o PDF…'); var t = tabela(); await gerarPdf({ titulo: rep.title + ' – ' + TIPOS[dados.tipo].nome, linhasMeta: metaFiltros(), secoes: [{ colunas: t.colunas, linhas: t.linhas }] }, slug(TIPOS[dados.tipo].nome) + '-' + f.de + '-' + f.ate); }
       catch (e) { toast(e.message); }
     });
     on('#rx', 'click', async function () {
+      if (dados.tipo === 'painel') { try { toast('Gerando o Excel…'); await gerarXlsx({ titulo: rep.title + ' – Painel', linhasMeta: metaFiltros() }, secoesPainel(), 'painel-' + f.de + '-' + f.ate); } catch (e) { toast(e.message); } return; }
       try { toast('Gerando o Excel…'); var t = tabela(); await gerarXlsx({ titulo: rep.title + ' – ' + TIPOS[dados.tipo].nome, linhasMeta: metaFiltros() }, [{ nome: TIPOS[dados.tipo].nome, colunas: t.colunas, linhas: t.linhas, larguras: t.colunas.map(function (c) { return /Coment|Item|Processos/.test(c) ? 50 : 18; }) }], slug(TIPOS[dados.tipo].nome) + '-' + f.de + '-' + f.ate); }
       catch (e) { toast(e.message); }
     });
@@ -907,6 +999,14 @@
       } catch (e) { toast(e.message); }
     });
     carregar().catch(function (e) { toast(e.message); });
+  }
+
+  async function baixarAvaliacao(id, tipo) {
+    try { toast('Gerando o arquivo…'); await exportarAvaliacao(await api('/api/evaluations/' + id), tipo); } catch (e) { toast(e.message); }
+  }
+  async function excluirAvaliacao(id) {
+    if (!confirm('Excluir esta autoavaliação e os prints anexados? Não dá para desfazer.')) return false;
+    try { await api('/api/evaluations/' + id, { method: 'DELETE' }); toast('Autoavaliação excluída.'); return true; } catch (e) { toast(e.message); return false; }
   }
 
   /* ------------------------------ admin: avaliacoes recebidas ------------------------------ */

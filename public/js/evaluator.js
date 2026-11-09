@@ -159,16 +159,21 @@
       var g = groups[id];
       var name = groups[id + '_label'] ? groups[id + '_label'].text : g.text;
       if (/^TextAnnotation/.test(id)) { annotations.push(g.text); return; }
-      var forma = shapeType(g.html);
+      var info = {};
+      var forma = shapeType(g.html, info);
       if (forma === 'flow') return; // setas (rotulos Sim/Nao)
       var tipo = forma === 'intermediate' || forma === 'unknown' ? guessType(name) : forma;
       if (forma === 'intermediate' && tipo === 'unknown') tipo = 'milestone';
-      els.push({ id: id, type: tipo, name: name });
+      els.push({ id: id, type: tipo, name: name, h: info.h || 0 });
     });
+    // O pool (nome do processo envolvendo todas as raias) e o retangulo mais alto: nao e raia
+    var faixas = els.filter(function (e) { return e.type === 'lane'; });
+    if (faixas.length) faixas.reduce(function (a, b) { return b.h > a.h ? b : a; }).type = 'pool';
     return { source: 'svg', elements: els, annotations: annotations };
   }
   // Tipo do elemento pela forma desenhada no SVG da Zeev
-  function shapeType(g) {
+  function shapeType(g, info) {
+    info = info || {};
     var formas = [];
     walk(g, function (el) {
       var t = localName(el);
@@ -178,12 +183,12 @@
       // ignora formas de elementos filhos (outro data-element-id)
       var p = el.parentNode;
       while (p && p !== g) { if (attr(p, 'data-element-id')) return; p = p.parentNode; }
-      formas.push({ t: t, r: parseFloat(attr(el, 'r')) || 0, rx: parseFloat(attr(el, 'rx')) || 0, w: parseFloat(attr(el, 'width')) || 0 });
+      formas.push({ t: t, r: parseFloat(attr(el, 'r')) || 0, rx: parseFloat(attr(el, 'rx')) || 0, w: parseFloat(attr(el, 'width')) || 0, h: parseFloat(attr(el, 'height')) || 0 });
     });
     if (!formas.length) return 'flow';
     var f = formas[0];
     if (f.t === 'polygon') return 'exclusiveGateway';
-    if (f.t === 'rect') return f.rx >= 3 ? 'task' : (f.w > 400 ? 'lane' : 'unknown');
+    if (f.t === 'rect') { info.h = f.h; return f.rx >= 3 ? 'task' : (f.w > 400 ? 'lane' : 'unknown'); }
     var circ = formas.filter(function (x) { return x.t === 'circle'; });
     if (circ.length === 1) return 'startEvent';
     if (circ[1].r && circ[1].r < 12) return 'endEvent';
@@ -537,8 +542,10 @@
       ctx.tarefasRegra = P.xls.ruleTasks.map(function (t) { return t.title; });
     }
     if (P.diagram) {
-      ctx.elementosDiagrama = P.diagram.elements.filter(function (e) { return e.name && e.type !== 'lane'; }).map(function (e) { return (TIPOS_PT[e.type] || e.type) + ': ' + e.name; });
+      ctx.elementosDiagrama = P.diagram.elements.filter(function (e) { return e.name && e.type !== 'lane' && e.type !== 'pool'; }).map(function (e) { return (TIPOS_PT[e.type] || e.type) + ': ' + e.name; });
       ctx.raias = P.diagram.elements.filter(function (e) { return e.type === 'lane'; }).map(function (e) { return e.name; });
+      var pool = P.diagram.elements.filter(function (e) { return e.type === 'pool'; })[0];
+      if (pool) ctx.pool = pool.name + ' (pool: nome do processo envolvendo as raias; não é raia nem papel)';
       ctx.anotacoes = P.diagram.annotations;
     }
     ctx.cabecalhosScripts = P.scripts.map(function (s) { return s.name + ': ' + firstComment(s.text).slice(0, 1200); });
