@@ -649,10 +649,12 @@
         var atual = grupo[0].id === e.id;
         return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + '</td><td>' + e.round + '</td><td>' + h(dataBR(e.created_at, true)) + '</td><td>' + (e.manual_version ? 'v' + h(e.manual_version) : '-') + '</td>' +
           '<td style="font-weight:700;color:' + (e.b_open ? 'var(--bad)' : 'var(--ok)') + '">' + e.b_open + '</td><td>' + e.r_open + '</td><td>' +
-          (e.coe_status && e.coe_status !== 'rascunho' ? stCoe(e.coe_status) : atual ? (e.ready ? st('pronto', 'Pronto para o CoE') : st('corrigir', 'Corrigir ou justificar')) : st('substituida', 'Substituída')) + '</td><td><a href="#/resultado/' + e.id + '"><b>Abrir</b></a></td></tr>';
+          (e.coe_status && e.coe_status !== 'rascunho' ? stCoe(e.coe_status) : atual ? (e.ready ? st('pronto', 'Pronto para o CoE') : st('corrigir', 'Corrigir ou justificar')) : st('substituida', 'Substituída')) + '</td><td class="acoes-rel"><a href="#/resultado/' + e.id + '"><b>Abrir</b></a>' +
+          (S.me.user.role === 'admin' ? '<br>' + botoesExcluir(e.id, e.process_name, e.app_code) : '') + '</td></tr>';
       }).join('') : '<tr><td colspan="8" class="muted">Nenhuma autoavaliação ainda. Comece por <a href="#/nova">Nova autoavaliação</a>.</td></tr>') +
       '</tbody></table></div></section>');
     bindLayout();
+    ligarExcluir(viewHistorico);
   }
 
   /* ------------------------------ admin: padroes ------------------------------ */
@@ -785,7 +787,6 @@
 
   /* ------------------------------ admin: relatorios ------------------------------ */
   var TIPOS = {
-    painel: { nome: 'Painel gráfico', cols: [] },
     processos: { nome: 'Autoavaliações por processo', cols: [['process_name', 'Processo'], ['app_code', 'App'], ['analista', 'Analista'], ['round', 'Rodada'], ['created_at', 'Data'], ['manual_version', 'Manual'], ['b_open', 'Bloqueantes abertos'], ['r_open', 'Recomendados abertos'], ['confirm', 'A confirmar'], ['ready', 'Situação'], ['coe_status', 'Situação no CoE']] },
     regras: { nome: 'Não conformidades mais frequentes', cols: [['regra', 'Regra'], ['item', 'Item'], ['severidade', 'Sev.'], ['ocorrencias', 'Ocorrências'], ['processos', 'Processos']] },
     uso: { nome: 'Uso da IA por analista', cols: [['analista', 'Analista'], ['email', 'E-mail'], ['analises', 'Análises'], ['falhas', 'Falhas'], ['dias', 'Dias com uso']] },
@@ -804,14 +805,16 @@
     var cfgAll = (await api('/api/config')).config;
     var rep = cfgAll.report;
     var hoje = new Date(), ini = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
-    var f = { tipo: 'painel', area: '', de: ini.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), processo: '', analista: '', situacao: '', coe: '', severidade: '', capitulo: '', manual: '', ultima: '1' };
+    var modo = 'tabelas';
+    var f = { tipo: 'processos', area: '', de: ini.toISOString().slice(0, 10), ate: hoje.toISOString().slice(0, 10), processo: '', analista: '', situacao: '', coe: '', severidade: '', capitulo: '', manual: '', ultima: '1' };
     var dados = { linhas: [] };
     function opt(v, t, sel) { return '<option value="' + h(v) + '"' + (v === sel ? ' selected' : '') + '>' + h(t) + '</option>'; }
     $app.innerHTML = layout('#/admin/relatorios',
       '<div class="head"><div><h1>Relatórios</h1><p class="lead">Acompanhe as autoavaliações da equipe e exporte com a identidade configurada abaixo.</p></div>' +
       '<div class="row"><button class="btn" id="rx">Exportar Excel</button><button class="btn primary" id="rp">Exportar PDF</button></div></div>' +
+      '<div class="tabs big" role="tablist" id="rmodo"><button type="button" role="tab" data-modo="tabelas">Relatórios</button><button type="button" role="tab" data-modo="painel">Painel gráfico</button></div>' +
       '<section class="card"><div class="card-head"><h2>Filtros</h2><button class="link" id="limpar">Limpar filtros</button></div><div class="grid g4">' +
-      '<label class="f">Tipo de relatório<select id="tipo">' + Object.keys(TIPOS).map(function (k) { return opt(k, TIPOS[k].nome, f.tipo); }).join('') + '</select></label>' +
+      '<label class="f" id="ftipo">Tipo de relatório<select id="tipo">' + Object.keys(TIPOS).map(function (k) { return opt(k, TIPOS[k].nome, f.tipo); }).join('') + '</select></label>' +
       '<label class="f">Período de<input type="date" id="de" value="' + f.de + '"></label><label class="f">até<input type="date" id="ate" value="' + f.ate + '"></label>' +
       '<label class="f">Processo<select id="processo">' + opt('', 'Todos', '') + filtros.processos.map(function (p) { return opt(p, p, ''); }).join('') + '</select></label>' +
       '<label class="f">Analista<select id="analista">' + opt('', 'Todos', '') + filtros.analistas.map(function (a) { return opt(String(a.id), a.name, ''); }).join('') + '</select></label>' +
@@ -822,7 +825,7 @@
       '<label class="f">Capítulo do manual<select id="capitulo">' + opt('', 'Todos', '') + ['1. Modelagem', '2. Formulários', '3. Scripts e estilos', '4. Integrações', '5. Responsáveis e SLA', '6. E-mails', '7. Publicação'].map(function (c) { return opt(c[0], c, ''); }).join('') + '</select></label></div>' +
       '<div class="row"><label class="check small"><input type="checkbox" id="ultima" checked>Só a última rodada de cada processo</label>' +
       '<label class="f" style="flex-direction:row;align-items:center">Versão do manual<select id="manual" style="width:auto">' + opt('', 'Todas', '') + filtros.manuais.filter(Boolean).map(function (m) { return opt(m, 'v' + m, ''); }).join('') + '</select></label>' +
-      '<button class="btn dark" id="aplicar">Aplicar</button></div><p class="tiny muted" style="margin:0">Severidade e capítulo valem para o painel, "Não conformidades" e "Detalhe dos itens". O painel considera todas as rodadas do período.</p></section>' +
+      '<button class="btn dark" id="aplicar">Aplicar</button></div><p class="tiny muted" style="margin:0">Severidade e capítulo valem para o painel, "Não conformidades" e "Detalhe dos itens". No painel, os gráficos consideram todas as rodadas do período; o tipo de cada gráfico pode ser trocado no próprio gráfico.</p></section>' +
       '<div class="grid g4" id="tiles"></div><div id="painel" class="painel"></div><div class="ctip" id="ctip" role="tooltip"></div>' +
       '<section class="card flush" id="rcard"><div class="card-head"><h2 id="rtit"></h2><span class="small muted">Pré-visualização do que será exportado</span></div><div class="tbl-wrap" id="rtab"></div></section>' +
       '<section class="card"><div><h2>Configurar relatório</h2><p class="small muted" style="margin:4px 0 0">Vale para todas as exportações em PDF e Excel, inclusive o relatório que o analista gera para o CoE.</p></div>' +
@@ -853,7 +856,7 @@
     async function carregar() {
       lerFiltros();
       var q = Object.keys(f).filter(function (k) { return f[k] !== ''; }).map(function (k) { return k + '=' + encodeURIComponent(f[k]); }).join('&');
-      if (f.tipo === 'painel') {
+      if (modo === 'painel') {
         var pn = await api('/api/reports/painel?' + q);
         dados = { tipo: 'painel', painel: pn, linhas: [] };
         $('#rcard').style.display = 'none';
@@ -868,15 +871,13 @@
       $('#rtab').innerHTML = '<table class="tbl" style="min-width:860px"><thead><tr>' + (acoes ? '<th>Avaliação</th>' : '') + T.cols.map(function (c) { return '<th>' + h(c[1]) + '</th>'; }).join('') + '</tr></thead><tbody>' +
         (dados.linhas.length ? dados.linhas.slice(0, 200).map(function (l) {
           var id = l.eval_id || l.id;
-          return '<tr>' + (acoes ? '<td class="acoes-rel"><a href="#/resultado/' + id + '">Abrir</a>' + (dados.tipo === 'processos' ? ' · <button class="link" data-rpdf="' + id + '">PDF</button> · <button class="link" data-rxls="' + id + '">Excel</button><br><button class="link danger" data-rdel="' + id + '">Excluir</button>' : '') + '</td>' : '') +
+          return '<tr>' + (acoes ? '<td class="acoes-rel"><a href="#/resultado/' + id + '">Abrir</a>' + (dados.tipo === 'processos' ? ' · <button class="link" data-rpdf="' + id + '">PDF</button> · <button class="link" data-rxls="' + id + '">Excel</button><br>' + botoesExcluir(id, l.process_name, l.app_code) : '') + '</td>' : '') +
             T.cols.map(function (c) { return '<td>' + h(celula(c[0], l[c[0]])) + '</td>'; }).join('') + '</tr>'; }).join('')
           : '<tr><td colspan="' + (T.cols.length + (acoes ? 1 : 0)) + '" class="muted">Nenhum registro com esses filtros.</td></tr>') + '</tbody></table>' +
         (dados.linhas.length > 200 ? '<div class="tbl-foot">Mostrando 200 de ' + dados.linhas.length + '; a exportação leva todos.</div>' : '');
       $$('[data-rpdf]').forEach(function (b) { b.addEventListener('click', function () { baixarAvaliacao(b.getAttribute('data-rpdf'), 'pdf'); }); });
       $$('[data-rxls]').forEach(function (b) { b.addEventListener('click', function () { baixarAvaliacao(b.getAttribute('data-rxls'), 'xlsx'); }); });
-      $$('[data-rdel]').forEach(function (b) { b.addEventListener('click', async function () {
-        if (await excluirAvaliacao(b.getAttribute('data-rdel'))) carregar().catch(function (e) { toast(e.message); });
-      }); });
+      ligarExcluir(atualizarTudo);
       var L = dados.linhas, tiles;
       if (dados.tipo === 'processos') tiles = [['Autoavaliações listadas', L.length], ['Processos', new Set(L.map(function (x) { return x.process_name.toLowerCase(); })).size],
         ['Prontos para o CoE', L.filter(function (x) { return x.ready; }).length], ['Bloqueantes abertos (soma)', L.reduce(function (a, x) { return a + x.b_open; }, 0)]];
@@ -886,21 +887,119 @@
       else tiles = [['Itens', L.length], ['Abertos', L.filter(function (x) { return x.status === 'aberto'; }).length], ['A confirmar', L.filter(function (x) { return x.status === 'confirmar'; }).length], ['Processos', new Set(L.map(function (x) { return x.processo; })).size]];
       $('#tiles').innerHTML = tiles.map(function (t) { return '<div class="tile"><span>' + h(t[0]) + '</span><b>' + t[1] + '</b></div>'; }).join('');
     }
+    // Depois de excluir: recarrega filtros, menu, tabela e painel
+    async function atualizarTudo() {
+      try {
+        filtros = await api('/api/reports/filters');
+        var sel = $('#processo'), atual = sel.value;
+        if (filtros.processos.indexOf(atual) < 0) atual = '';
+        sel.innerHTML = opt('', 'Todos', atual) + filtros.processos.map(function (p) { return opt(p, p, atual); }).join('');
+        var nav = $('.nav'); if (nav) { var tmp = document.createElement('div'); tmp.innerHTML = layout('#/admin/relatorios', ''); var nn = tmp.querySelector('.nav'); if (nn) nav.innerHTML = nn.innerHTML; }
+        await carregar();
+      } catch (e) { toast(e.message); }
+    }
     // ---------- painel grafico ----------
     var COR_COE = { rascunho: '#8A94A3', enviado: '#33475F', aprovado: '#1E6B34', aprovado_ressalva: '#B07A00', devolvido: '#A11A1A' };
-    function grafico(id, titulo, sub, linhas, unidade) {
-      var max = Math.max.apply(null, linhas.map(function (l) { return l.valor; }).concat([1]));
-      return '<section class="card chart"><div><h2>' + h(titulo) + '</h2><p class="small muted" style="margin:4px 0 0">' + h(sub) + '</p></div>' +
-        (linhas.length && linhas.some(function (l) { return l.valor; }) ? '<div class="hbars">' + linhas.map(function (l, i) {
-          var tag = l.filtro ? 'button type="button"' : 'div';
-          return '<' + tag + ' class="hb' + (l.filtro ? ' clic' : '') + '" data-g="' + id + '" data-i="' + i + '">' +
-            '<span class="hb-l" title="' + h(l.rotulo) + '">' + h(l.rotulo) + '</span>' +
-            '<span class="hb-t"><i style="width:' + Math.max(l.valor ? 1.5 : 0, l.valor / max * 100) + '%' + (l.cor ? ';background:' + l.cor : '') + '"></i></span>' +
-            '<span class="hb-v">' + l.valor + '</span></' + (l.filtro ? 'button' : 'div') + '>';
-        }).join('') + '</div>' : '<p class="muted small">Sem dados no período.</p>') +
-        (unidade ? '<p class="tiny muted" style="margin:0">' + h(unidade) + '</p>' : '') + '</section>';
+    // paleta categorica validada (ordem fixa); pizza/rosca agrupam o excedente em "Outros"
+    var PALETA = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6', '#8A94A3'];
+    var FORMAS = [['barras', 'Barras'], ['colunas', 'Colunas'], ['pizza', 'Pizza'], ['rosca', 'Rosca'], ['tabela', 'Tabela']];
+    var formaDe = {};
+    try { formaDe = JSON.parse(localStorage.getItem('coe-graficos') || '{}') || {}; } catch (e) { formaDe = {}; }
+    var defs = {};
+    function marca(l, id, i, extra) { return ' data-g="' + id + '" data-i="' + i + '" class="gm' + (l.filtro ? ' clic' : '') + (extra || '') + '"' + (l.filtro ? ' tabindex="0" role="button"' : ''); }
+    function grBarras(id, linhas, max) {
+      return '<div class="hbars">' + linhas.map(function (l, i) {
+        return '<div' + marca(l, id, i, ' hb') + '><span class="hb-l" title="' + h(l.rotulo) + '">' + h(l.rotulo) + '</span>' +
+          '<span class="hb-t"><i style="width:' + Math.max(l.valor ? 1.5 : 0, l.valor / max * 100) + '%' + (l.cor ? ';background:' + l.cor : '') + '"></i></span>' +
+          '<span class="hb-v">' + l.valor + '</span></div>';
+      }).join('') + '</div>';
     }
-    var series = {};
+    function grColunas(id, linhas, max) {
+      var n = linhas.length, E0 = 40, W = 680, H = 260, base = 190, topo = 22, passo = (W - E0 - 10) / n, larg = Math.min(56, passo * 0.62);
+      return '<svg class="gsvg" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Gráfico de colunas">' +
+        '<line x1="' + E0 + '" x2="' + (W - 10) + '" y1="' + base + '" y2="' + base + '" stroke="var(--field)"/>' +
+        linhas.map(function (l, i) {
+          var hh = l.valor ? Math.max(3, l.valor / max * (base - topo)) : 0, x = E0 + passo * i + (passo - larg) / 2, y = base - hh;
+          var rot = l.rotulo.length > 18 ? l.rotulo.slice(0, 17) + '…' : l.rotulo;
+          return '<g' + marca(l, id, i) + '><rect x="' + (E0 + passo * i) + '" y="' + topo + '" width="' + passo + '" height="' + (H - topo) + '" fill="transparent"/>' +
+            '<path d="M' + x + ',' + base + 'V' + (y + 4) + 'q0,-4 4,-4h' + (larg - 8) + 'q4,0 4,4V' + base + 'z" fill="' + (l.cor || 'var(--info)') + '"/>' +
+            '<text x="' + (x + larg / 2) + '" y="' + (y - 6) + '" text-anchor="middle" class="gv">' + l.valor + '</text>' +
+            '<text x="' + (x + larg / 2) + '" y="' + (base + 16) + '" text-anchor="end" transform="rotate(-30 ' + (x + larg / 2) + ' ' + (base + 16) + ')" class="gl">' + h(rot) + '</text></g>';
+        }).join('') + '</svg>';
+    }
+    function grPizza(id, linhas, rosca) {
+      var tot = linhas.reduce(function (a, l) { return a + l.valor; }, 0), ang = -Math.PI / 2, R = 100, r0 = rosca ? 58 : 0, cx = 110, cy = 110;
+      var vis = linhas.filter(function (l) { return l.valor; });
+      function pt(a, rr) { return (cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2); }
+      var fatias = vis.map(function (l) {
+        var i = linhas.indexOf(l), a2 = ang + l.valor / tot * Math.PI * 2, grande = a2 - ang > Math.PI ? 1 : 0, d;
+        if (vis.length === 1) d = 'M' + pt(-Math.PI / 2, R) + 'A' + R + ',' + R + ' 0 1 1 ' + pt(Math.PI * 1.5 - 0.001, R) + 'Z' + (rosca ? 'M' + pt(-Math.PI / 2, r0) + 'A' + r0 + ',' + r0 + ' 0 1 0 ' + pt(Math.PI * 1.5 - 0.001, r0) + 'Z' : '');
+        else d = 'M' + pt(ang, R) + 'A' + R + ',' + R + ' 0 ' + grande + ' 1 ' + pt(a2, R) + (rosca ? 'L' + pt(a2, r0) + 'A' + r0 + ',' + r0 + ' 0 ' + grande + ' 0 ' + pt(ang, r0) : 'L' + cx + ',' + cy) + 'Z';
+        ang = a2;
+        return '<path' + marca(l, id, i) + ' d="' + d + '" fill="' + l.cor + '" fill-rule="evenodd" stroke="#fff" stroke-width="2"/>';
+      }).join('');
+      return '<div class="gpie"><svg class="gsvg" viewBox="0 0 220 220" role="img" aria-label="Gráfico de ' + (rosca ? 'rosca' : 'pizza') + '">' + fatias +
+        (rosca ? '<text x="110" y="108" text-anchor="middle" class="gtot">' + tot + '</text><text x="110" y="126" text-anchor="middle" class="gl">total</text>' : '') + '</svg>' +
+        '<ul class="glegend">' + linhas.map(function (l, i) {
+          return '<li' + marca(l, id, i) + '><i style="background:' + l.cor + '"></i><span class="hb-l" title="' + h(l.rotulo) + '">' + h(l.rotulo) + '</span><b>' + l.valor + '</b><small>' + (tot ? Math.round(l.valor / tot * 100) : 0) + '%</small></li>';
+        }).join('') + '</ul></div>';
+    }
+    function grTabela(id, linhas) {
+      var tot = linhas.reduce(function (a, l) { return a + l.valor; }, 0);
+      return '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Item</th><th>Quantidade</th><th>%</th></tr></thead><tbody>' + linhas.map(function (l, i) {
+        return '<tr' + marca(l, id, i) + '><td>' + h(l.rotulo) + '</td><td>' + l.valor + '</td><td>' + (tot ? Math.round(l.valor / tot * 100) : 0) + '%</td></tr>'; }).join('') + '</tbody></table></div>';
+    }
+    // linhas desenhadas: pizza e rosca agrupam alem de 6 fatias em "Outros"; cores categoricas quando nao ha cor propria
+    function linhasDe(id, forma) {
+      var ls = series[id].slice();
+      if ((forma === 'pizza' || forma === 'rosca') && ls.length > 7) {
+        var resto = ls.slice(6), soma = resto.reduce(function (a, l) { return a + l.valor; }, 0);
+        ls = ls.slice(0, 6).concat([{ rotulo: 'Outros (' + resto.length + ')', valor: soma, tip: ['Outros', soma + ' no total', resto.slice(0, 8).map(function (l) { return l.rotulo + ': ' + l.valor; }).join(' · ')] }]);
+      }
+      return ls.map(function (l, i) { return Object.assign({}, l, { cor: l.cor || (forma === 'pizza' || forma === 'rosca' ? PALETA[Math.min(i, PALETA.length - 1)] : '') }); });
+    }
+    function corpoGrafico(id) {
+      var forma = formaDe[id] || defs[id].forma, ls = linhasDe(id, forma);
+      desenhadas[id] = ls;
+      if (!ls.length || !ls.some(function (l) { return l.valor; })) return '<p class="muted small">Sem dados no período.</p>';
+      var max = Math.max.apply(null, ls.map(function (l) { return l.valor; }).concat([1]));
+      if (forma === 'colunas') return grColunas(id, ls, max);
+      if (forma === 'pizza' || forma === 'rosca') return grPizza(id, ls, forma === 'rosca');
+      if (forma === 'tabela') return grTabela(id, ls);
+      return grBarras(id, ls, max);
+    }
+    function grafico(id, titulo, sub, forma, nota) {
+      defs[id] = { forma: forma };
+      var atual = formaDe[id] || forma;
+      return '<section class="card chart"><div class="row between" style="align-items:flex-start"><div><h2>' + h(titulo) + '</h2><p class="small muted" style="margin:4px 0 0">' + h(sub) + '</p></div>' +
+        '<label class="f" style="flex-direction:row;align-items:center;gap:6px"><span class="sr">Tipo de gráfico</span><select data-forma="' + id + '" aria-label="Tipo de gráfico de ' + h(titulo) + '">' +
+        FORMAS.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === atual ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></label></div>' +
+        '<div class="gbody" id="gb-' + id + '">' + corpoGrafico(id) + '</div>' + (nota ? '<p class="tiny muted" style="margin:0">' + h(nota) + '</p>' : '') + '</section>';
+    }
+    var series = {}, desenhadas = {};
+    function ligarMarcas(raiz) {
+      var tip = $('#ctip');
+      $$('#' + raiz.id + ' .gm, ' + (raiz.id === 'painel' ? '#painel .gm' : '')).forEach(function (el) {
+        if (el._ok) return; el._ok = 1;
+        var l = desenhadas[el.getAttribute('data-g')][+el.getAttribute('data-i')];
+        el.addEventListener('mousemove', function (ev) {
+          tip.innerHTML = (l.tip || [l.rotulo, String(l.valor)]).filter(Boolean).map(function (t, i) { return i ? '<span>' + h(t) + '</span>' : '<b>' + h(t) + '</b>'; }).join('');
+          tip.classList.add('on');
+          var x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8), y = ev.clientY + 14;
+          if (y + tip.offsetHeight > window.innerHeight - 8) y = ev.clientY - tip.offsetHeight - 10;
+          tip.style.left = x + 'px'; tip.style.top = y + 'px';
+        });
+        el.addEventListener('mouseleave', function () { tip.classList.remove('on'); });
+        function ir() {
+          tip.classList.remove('on');
+          var fl = l.filtro;
+          Object.keys(fl).forEach(function (k) { if (k === 'ultima') $('#ultima').checked = fl.ultima; else if (k === 'tipo') { if (fl.tipo !== 'painel') { modo = 'tabelas'; $('#tipo').value = fl.tipo; } } else $('#' + k).value = fl[k]; });
+          marcarModo(); carregar().catch(function (e) { toast(e.message); });
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        if (l.filtro) { el.addEventListener('click', ir); el.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ir(); } }); }
+      });
+    }
     function desenharPainel(pn) {
       var k = pn.kpis;
       $('#tiles').innerHTML = [['Autoavaliações no período', k.avaliacoes, 'todas as rodadas'], ['Processos', k.processos, k.mediaRodadas + ' rodada(s) em média'],
@@ -920,29 +1019,21 @@
         areas: pn.areas.map(function (r) { return { rotulo: r.rotulo, valor: r.valor, tip: [r.rotulo, r.valor + ' processo(s)', 'Clique para filtrar'], filtro: { area: r.rotulo, tipo: 'painel' } }; })
       };
       $('#painel').innerHTML =
-        grafico('regras', 'Itens mais reprovados', 'Regras com bloqueante aberto ou justificativa não aceita, somando todas as rodadas', series.regras, 'Passe o mouse para ver em quais processos.') +
+        grafico('regras', 'Itens mais reprovados', 'Regras com bloqueante aberto ou justificativa não aceita, somando todas as rodadas', 'barras', 'Passe o mouse para ver em quais processos.') +
         '<div class="grid g2">' +
-        grafico('rodadas', 'Rodadas por processo', 'Quantas rodadas cada processo precisou', series.rodadas) +
-        grafico('situacao', 'Situação no CoE', 'Última rodada de cada processo', series.situacao) +
-        grafico('analistas', 'Processos por analista', 'Processos distintos avaliados', series.analistas) +
-        grafico('avaliadores', 'Processos por avaliador do CoE', 'Processos com decisão registrada', series.avaliadores) +
-        '</div>' + grafico('areas', 'Processos por área responsável', 'Processos distintos por área informada na autoavaliação', series.areas);
-      var tip = $('#ctip');
-      $$('.hb').forEach(function (el) {
-        var l = series[el.getAttribute('data-g')][+el.getAttribute('data-i')];
-        el.addEventListener('mousemove', function (ev) {
-          tip.innerHTML = l.tip.filter(Boolean).map(function (t, i) { return i ? '<span>' + h(t) + '</span>' : '<b>' + h(t) + '</b>'; }).join('');
-          tip.classList.add('on');
-          var x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8), y = ev.clientY + 14;
-          if (y + tip.offsetHeight > window.innerHeight - 8) y = ev.clientY - tip.offsetHeight - 10;
-          tip.style.left = x + 'px'; tip.style.top = y + 'px';
-        });
-        el.addEventListener('mouseleave', function () { tip.classList.remove('on'); });
-        if (l.filtro) el.addEventListener('click', function () {
-          tip.classList.remove('on');
-          Object.keys(l.filtro).forEach(function (k) { if (k === 'ultima') $('#ultima').checked = l.filtro.ultima; else $('#' + k).value = l.filtro[k]; });
-          carregar().catch(function (e) { toast(e.message); });
-          window.scrollTo({ top: 0, behavior: 'smooth' });
+        grafico('rodadas', 'Rodadas por processo', 'Quantas rodadas cada processo precisou', 'colunas') +
+        grafico('situacao', 'Situação no CoE', 'Última rodada de cada processo', 'rosca') +
+        grafico('analistas', 'Processos por analista', 'Processos distintos avaliados', 'barras') +
+        grafico('avaliadores', 'Processos por avaliador do CoE', 'Processos com decisão registrada', 'barras') +
+        '</div>' + grafico('areas', 'Processos por área responsável', 'Processos distintos por área informada na autoavaliação', 'pizza');
+      ligarMarcas($('#painel'));
+      $$('[data-forma]').forEach(function (sel) {
+        sel.addEventListener('change', function () {
+          var id = sel.getAttribute('data-forma');
+          formaDe[id] = sel.value;
+          try { localStorage.setItem('coe-graficos', JSON.stringify(formaDe)); } catch (e) { /* sem armazenamento: vale so nesta tela */ }
+          $('#gb-' + id).innerHTML = corpoGrafico(id);
+          ligarMarcas($('#painel'));
         });
       });
     }
@@ -969,6 +1060,13 @@
     }
     function tabela() { var T = TIPOS[dados.tipo]; return { colunas: T.cols.map(function (c) { return c[1]; }), linhas: dados.linhas.map(function (l) { return T.cols.map(function (c) { return celula(c[0], l[c[0]]); }); }) }; }
     on('#aplicar', 'click', function () { carregar().catch(function (e) { toast(e.message); }); });
+    function marcarModo() {
+      $$('[data-modo]').forEach(function (b) { var on_ = b.getAttribute('data-modo') === modo; b.classList.toggle('on', on_); b.setAttribute('aria-selected', on_); });
+      $('#ftipo').style.display = modo === 'painel' ? 'none' : '';
+      $('#ultima').parentNode.style.display = modo === 'painel' ? 'none' : '';
+    }
+    $$('[data-modo]').forEach(function (b) { b.addEventListener('click', function () { modo = b.getAttribute('data-modo'); marcarModo(); carregar().catch(function (e) { toast(e.message); }); }); });
+    marcarModo();
     on('#tipo', 'change', function () { carregar().catch(function (e) { toast(e.message); }); });
     on('#limpar', 'click', function () { ['processo', 'analista', 'area', 'situacao', 'coe', 'severidade', 'capitulo', 'manual'].forEach(function (k) { $('#' + k).value = ''; }); $('#ultima').checked = true; carregar(); });
     on('#rp', 'click', async function () {
@@ -1005,8 +1103,23 @@
     try { toast('Gerando o arquivo…'); await exportarAvaliacao(await api('/api/evaluations/' + id), tipo); } catch (e) { toast(e.message); }
   }
   async function excluirAvaliacao(id) {
-    if (!confirm('Excluir esta autoavaliação e os prints anexados? Não dá para desfazer.')) return false;
-    try { await api('/api/evaluations/' + id, { method: 'DELETE' }); toast('Autoavaliação excluída.'); return true; } catch (e) { toast(e.message); return false; }
+    if (!confirm('Excluir esta rodada e os prints anexados? As outras rodadas do processo continuam. Não dá para desfazer.')) return false;
+    try { await api('/api/evaluations/' + id, { method: 'DELETE' }); toast('Rodada excluída.'); await carregarMe(); return true; } catch (e) { toast(e.message); return false; }
+  }
+  async function excluirProcesso(nome, app) {
+    if (!confirm('Excluir o processo "' + nome + '"' + (app ? ' (app ' + app + ')' : '') + ' inteiro: todas as rodadas, de todos os analistas, com os prints? Não dá para desfazer.')) return false;
+    try {
+      var r = await api('/api/processes/delete', { method: 'POST', body: { process_name: nome, app_code: app || '' } });
+      toast('Processo excluído (' + r.excluidas + ' rodada(s)).'); await carregarMe(); return true;
+    } catch (e) { toast(e.message); return false; }
+  }
+  // Botoes de exclusao (so admin) usados no historico e nos relatorios
+  function botoesExcluir(id, nome, app) {
+    return '<button class="link danger" data-del-rod="' + id + '">Excluir rodada</button> · <button class="link danger" data-del-proc="' + h(nome) + '" data-del-app="' + h(app || '') + '">Excluir processo</button>';
+  }
+  function ligarExcluir(depois) {
+    $$('[data-del-rod]').forEach(function (b) { b.addEventListener('click', async function () { if (await excluirAvaliacao(b.getAttribute('data-del-rod'))) depois(); }); });
+    $$('[data-del-proc]').forEach(function (b) { b.addEventListener('click', async function () { if (await excluirProcesso(b.getAttribute('data-del-proc'), b.getAttribute('data-del-app'))) depois(); }); });
   }
 
   /* ------------------------------ admin: avaliacoes recebidas ------------------------------ */
