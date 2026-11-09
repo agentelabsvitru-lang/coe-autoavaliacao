@@ -31,13 +31,92 @@
       if (opts.raw) { init.body = opts.body; init.headers['content-type'] = opts.type; }
       else { init.body = JSON.stringify(opts.body); init.headers['content-type'] = 'application/json'; }
     }
-    var r = await fetch(path, init);
+    // tempo limite: sem resposta do servidor, a tela avisa em vez de ficar parada
+    var limite = opts.timeout || 30000, ctl = new AbortController(), tm = setTimeout(function () { ctl.abort(); }, limite);
+    init.signal = ctl.signal;
+    var r;
+    try { r = await fetch(path, init); }
+    catch (e) {
+      var er = new Error(e.name === 'AbortError'
+        ? 'O servidor não respondeu em ' + Math.round(limite / 1000) + ' segundos.'
+        : 'Não foi possível comunicar com o servidor. Verifique sua conexão com a internet.');
+      er.rede = true; throw er;
+    } finally { clearTimeout(tm); }
     var j = null;
     try { j = await r.json(); } catch (e) { j = {}; }
     if (r.status === 401 && !opts.allow401) { S.me = null; go('#/login'); throw new Error(j.error || 'Sessão expirada.'); }
-    if (!r.ok) { var err = new Error(j.error || ('Erro ' + r.status)); err.status = r.status; err.data = j; throw err; }
+    if (!r.ok) { var err = new Error(j.error || (r.status >= 500 ? 'O servidor teve um erro interno (' + r.status + ').' : 'Erro ' + r.status)); err.status = r.status; err.data = j; throw err; }
     return j;
   }
+  // Janela de andamento que bloqueia a tela durante operacoes demoradas
+  var Esp = null;
+  function espera(titulo) {
+    fecharEspera();
+    var d = document.createElement('div');
+    d.className = 'espera'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-label', titulo);
+    d.innerHTML = '<div class="espera-card"><h2>' + h(titulo) + '</h2><ol class="esp-passos" aria-live="polite"></ol><p class="esp-dica small muted"></p><div class="row end esp-acoes"></div></div>';
+    document.body.appendChild(d);
+    Esp = { el: d, passos: [], ini: Date.now() };
+    Esp.tick = setInterval(function () {
+      if (!Esp) return;
+      var atual = Esp.passos.filter(function (p) { return p.cls === 'run'; })[0];
+      if (!atual) return;
+      var seg = Math.round((Date.now() - atual.ini) / 1000);
+      var t = Esp.el.querySelector('[data-p="' + Esp.passos.indexOf(atual) + '"] .esp-t'); if (t) t.textContent = seg + ' s';
+      var dica = Esp.el.querySelector('.esp-dica');
+      dica.textContent = seg >= (atual.lento || 45) ? 'Está demorando mais que o normal. Aguarde: se o servidor não responder, aparece um aviso aqui.' : '';
+    }, 1000);
+    window.addEventListener('beforeunload', avisoSaida);
+    return {
+      passo: function (txt, lento) { Esp.passos.push({ txt: txt, cls: 'run', ini: Date.now(), lento: lento }); desenharEspera(); return Esp.passos.length - 1; },
+      ok: function (i, txt) { var p = Esp.passos[i]; p.cls = 'done'; if (txt) p.txt = txt; desenharEspera(); },
+      falha: function (i, txt) { var p = Esp.passos[i]; p.cls = 'err'; if (txt) p.txt = txt; desenharEspera(); },
+      aviso: function (i, txt) { var p = Esp.passos[i]; p.cls = 'warn'; if (txt) p.txt = txt; desenharEspera(); }
+    };
+  }
+  function desenharEspera() {
+    Esp.el.querySelector('.esp-passos').innerHTML = Esp.passos.map(function (p, i) {
+      return '<li class="' + p.cls + '" data-p="' + i + '"><span class="esp-i">' + (p.cls === 'run' ? '<i class="spin"></i>' : p.cls === 'done' ? '✓' : p.cls === 'warn' ? '!' : '×') + '</span><span>' + h(p.txt) + '</span>' + (p.cls === 'run' ? '<span class="esp-t">0 s</span>' : '') + '</li>';
+    }).join('');
+  }
+  // Mostra o problema na propria janela, com botoes de acao (ex.: tentar de novo)
+  function problemaEspera(msg, botoes) {
+    if (!Esp) return;
+    Esp.passos.forEach(function (p) { if (p.cls === 'run') p.cls = 'err'; });
+    desenharEspera();
+    var card = Esp.el.querySelector('.espera-card');
+    card.classList.add('com-erro');
+    Esp.el.querySelector('.esp-dica').innerHTML = '<span class="esp-erro"><b>Ocorreu um problema.</b> ' + h(msg) + '</span>';
+    var ac = Esp.el.querySelector('.esp-acoes'); ac.innerHTML = '';
+    (botoes || [{ txt: 'Fechar', fn: fecharEspera }]).forEach(function (b, i) {
+      var bt = document.createElement('button'); bt.className = 'btn' + (i === 0 ? ' primary' : ''); bt.textContent = b.txt;
+      bt.addEventListener('click', b.fn); ac.appendChild(bt);
+    });
+    ac.querySelector('button').focus();
+  }
+  function fecharEspera() {
+    if (!Esp) return;
+    clearInterval(Esp.tick); Esp.el.remove(); Esp = null;
+    window.removeEventListener('beforeunload', avisoSaida);
+  }
+  function avisoSaida(e) { e.preventDefault(); e.returnValue = ''; }
+  // Operacao simples com janela de espera (enviar, registrar decisao, excluir)
+  async function comEspera(titulo, txt, fn) {
+    var w = espera(titulo), i = w.passo(txt, 20);
+    try { var r = await fn(); fecharEspera(); return r; }
+    catch (e) {
+      // erro de validacao (4xx) volta para a tela; falha de comunicacao ou do servidor fica na janela
+      if (e.status && e.status < 500) { fecharEspera(); throw e; }
+      w.falha(i); problemaEspera(e.message + ' Nada foi gravado: tente de novo em instantes.'); throw e;
+    }
+  }
+  // Aviso fixo quando o computador perde a conexao
+  window.addEventListener('offline', function () {
+    var b = document.getElementById('offline') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'offline', role: 'alert' }));
+    b.textContent = 'Sem conexão com a internet. O app não consegue falar com o servidor até a conexão voltar.';
+  });
+  window.addEventListener('online', function () { var b = document.getElementById('offline'); if (b) b.remove(); toast('Conexão restabelecida.'); });
+
   function readText(file) {
     return file.arrayBuffer().then(function (buf) {
       var t = new TextDecoder('utf-8').decode(buf);
@@ -277,53 +356,67 @@
     S.lastFiles = { proc: proc, app: $('#appcode').value.trim(), ver: $('#ver').value.trim(), area: $('#area').value.trim() };
     var usarIA = $('#ia').checked;
     var btn = $('#rodar'); btn.disabled = true;
-    var prog = $('#prog'); prog.style.display = 'flex';
-    var passos = [];
-    function passo(txt, cls) { passos.push({ txt: txt, cls: cls }); desenhar(); return passos.length - 1; }
-    function marca(i, cls, txt) { passos[i].cls = cls; if (txt) passos[i].txt = txt; desenhar(); }
-    function desenhar() { prog.innerHTML = '<h2>Andamento</h2><div class="progress">' + passos.map(function (p) { return '<div class="' + p.cls + '">' + h(p.txt) + '</div>'; }).join('') + '</div>'; }
+    var w = espera('Rodando a autoavaliação'), pAtual = -1, payload = null;
+    function liberar() { btn.disabled = false; }
+    async function salvar() {
+      var ps = w.passo('Gravando a rodada no servidor', 30); pAtual = ps;
+      var salvo = await api('/api/evaluations', { method: 'POST', body: payload, timeout: 45000 });
+      w.ok(ps, 'Rodada ' + salvo.round + ' gravada');
+      fecharEspera();
+      go('#/resultado/' + salvo.id);
+    }
+    function erroSalvar(e) {
+      // o resultado ja calculado (inclusive da IA) fica guardado: so a gravacao e repetida
+      problemaEspera('A rodada não foi gravada: ' + e.message + ' O resultado da análise está guardado nesta tela.', [
+        { txt: 'Tentar gravar de novo', fn: function () { problemaReset(); salvar().catch(erroSalvar); } },
+        { txt: 'Cancelar', fn: function () { fecharEspera(); liberar(); } }
+      ]);
+    }
+    function problemaReset() {
+      Esp.el.querySelector('.espera-card').classList.remove('com-erro');
+      Esp.el.querySelector('.esp-dica').textContent = ''; Esp.el.querySelector('.esp-acoes').innerHTML = '';
+    }
     try {
-      var p1 = passo('Lendo os arquivos', 'run');
+      var p1 = w.passo('Lendo os arquivos'); pAtual = p1;
       var todos = [].concat(Array.from(fx), Array.from(fd), Array.from($('#fjs').files), Array.from($('#fcss').files));
       var files = await Promise.all(todos.map(async function (f) { return { name: f.name, text: await readText(f) }; }));
       var P = E.parseFiles(files, { processName: proc });
       if (P.notes.length) throw new Error(P.notes.join(' | '));
       if (!P.xls) throw new Error('Não reconheci o export .xls da Zeev.');
       var resumo = E.summary(P);
-      marca(p1, 'done', 'Arquivos lidos: ' + [resumo.xls, resumo.diagram].filter(Boolean).join(' · '));
-      var p2 = passo('Rodando as conferências automáticas', 'run');
+      w.ok(p1, 'Arquivos lidos: ' + [resumo.xls, resumo.diagram].filter(Boolean).join(' · '));
+      var p2 = w.passo('Buscando padrões e conferências no servidor', 20); pAtual = p2;
       var dados = await Promise.all([api('/api/checks'), api('/api/manual'), api('/api/orientacoes')]);
       var auto = E.runChecks(P, dados[0].checks);
       var manual = dados[1].vigente;
       var rules = manual ? manual.rules : [];
-      marca(p2, 'done', E.CHECKS.length + ' conferências automáticas concluídas');
+      w.ok(p2, E.CHECKS.length + ' conferências automáticas concluídas');
       var resposta = null, modelo = '', avisoIA = '';
       var autoRules = {}; auto.forEach(function (a) { autoRules[a.rule] = 1; });
       var regrasIA = rules.filter(function (r) { return r.aval === 'ia' && !autoRules[r.code]; });
       if (usarIA && regrasIA.length) {
-        var p3 = passo('Analisando ' + regrasIA.length + ' regras com IA (pode levar até 1 minuto)', 'run');
+        var p3 = w.passo('Analisando ' + regrasIA.length + ' regras com IA (costuma levar de 20 s a 2 min)', 90); pAtual = p3;
         try {
           var pr = E.aiPrompt(P, regrasIA, true, dados[2].orientacoes);
-          var r = await api('/api/ai/evaluate', { method: 'POST', body: pr });
+          var r = await api('/api/ai/evaluate', { method: 'POST', body: pr, timeout: 170000 });
           resposta = E.parseAiAnswer(r.texto); modelo = r.modelo; avisoIA = r.aviso;
-          marca(p3, 'done', 'Análise por IA concluída (' + r.modelo + ')');
+          w.ok(p3, 'Análise por IA concluída (' + r.modelo + ')');
         } catch (e) {
-          marca(p3, 'err', 'IA indisponível: ' + e.message + '. Os itens de IA ficam como "A verificar".');
+          w.aviso(p3, 'IA indisponível: ' + e.message + ' Os itens de IA ficam como "A verificar".');
+          avisoIA = 'A IA não respondeu nesta rodada (' + e.message + '). Os itens de IA ficaram como "A verificar"; rode de novo mais tarde para avaliá-los.';
         }
       }
       var items = E.buildItems(auto, rules, resposta, { iaBloqueia: S.me.iaBloqueia });
-      var p4 = passo('Salvando a rodada', 'run');
-      var salvo = await api('/api/evaluations', { method: 'POST', body: {
+      payload = {
         process_name: proc, app_code: S.lastFiles.app, flow_version: S.lastFiles.ver, area: S.lastFiles.area,
         manual_version: manual ? manual.version : '', with_ai: !!resposta, model: modelo, items: items,
         risks: resposta ? resposta.riscos.slice(0, 6) : [], summary: Object.assign(resumo, { arquivos: files.map(function (f) { return f.name; }), avisoIA: avisoIA })
-      } });
-      marca(p4, 'done', 'Rodada ' + salvo.round + ' salva');
-      go('#/resultado/' + salvo.id);
+      };
     } catch (e) {
-      passo(e.message, 'err');
-      btn.disabled = false;
+      problemaEspera(e.message + (e.rede ? ' Confira a conexão e rode de novo.' : ''), [{ txt: 'Fechar', fn: function () { fecharEspera(); liberar(); } }]);
+      return;
     }
+    salvar().catch(erroSalvar);
   }
 
   /* ------------------------------ resultado ------------------------------ */
@@ -511,12 +604,14 @@
       var nj = ev.items.filter(function (i) { return exigeJust(i) && i.just; }).length;
       if (!confirm(nj ? 'Enviar ao CoE com ' + nj + ' pendência(s) justificada(s)? Depois do envio a rodada não pode mais ser alterada.' : 'Enviar esta rodada ao CoE? Depois do envio ela não pode mais ser alterada.')) return;
       try {
-        await api('/api/evaluations/' + ev.id + '/submit', { method: 'POST', body: { items: ev.items } });
+        await comEspera('Enviando ao CoE', 'Enviando a rodada e as justificativas', function () {
+          return api('/api/evaluations/' + ev.id + '/submit', { method: 'POST', body: { items: ev.items } });
+        });
         await viewResultado(ev.id);
         window.scrollTo(0, 0);
         await mensagem('Enviado ao CoE', '<p>A rodada ' + ev.round + ' de <b>' + h(ev.process_name) + '</b> foi enviada' + (nj ? ' com ' + nj + ' justificativa(s)' : '') + '.</p>' +
           '<p>Acompanhe o andamento pela barra de progresso no topo desta tela. Quando o CoE registrar a decisão, aparece um aviso no app e em "Minhas autoavaliações".</p>', 'info');
-      } catch (e) { toast(e.message); }
+      } catch (e) { if (!Esp) toast(e.message); }
     }
     async function registrarDecisao() {
       var err = $('#rerr'); err.textContent = '';
@@ -527,7 +622,9 @@
         if (r.orientar && (r.instrucao || '').trim()) orient.push({ regras: r.regras, texto: r.instrucao.trim() });
       });
       try {
-        var r = await api('/api/evaluations/' + ev.id + '/review', { method: 'POST', body: { itens: itens, decisao: revGeral.decisao, parecer: revGeral.parecer, orientacoes: orient } });
+        var r = await comEspera('Registrando a decisão do CoE', 'Gravando a decisão e as instruções', function () {
+          return api('/api/evaluations/' + ev.id + '/review', { method: 'POST', body: { itens: itens, decisao: revGeral.decisao, parecer: revGeral.parecer, orientacoes: orient } });
+        });
         toast('Decisão registrada' + (r.orientacoesCriadas ? ' · ' + r.orientacoesCriadas + ' orientação(ões) para a IA criada(s)' : '') + '.');
         await carregarMe(); viewResultado(ev.id);
       } catch (e) { err.textContent = e.message; }
