@@ -170,3 +170,22 @@ td .acts { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .just textarea, .coe-box textarea { width: 100%; font: inherit; font-size: 13px; }
 .coe-box { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--ink2); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; }
 .coe-box.ro { border-style: solid; border-color: var(--line); background: var(--line2); display: block; }
+
+/* --- painel grafico dos relatorios --- */
+.painel { display: flex; flex-direction: column; gap: 22px; }
+.painel:empty { display: none; }
+.chart { gap: 14px; }
+.hbars { display: flex; flex-direction: column; gap: 2px; }
+.hb { display: grid; grid-template-columns: minmax(120px, 38%) 1fr 44px; align-items: center; gap: 10px; padding: 5px 6px; border: 0; background: none; border-radius: 6px; text-align: left; color: var(--ink); font-size: 13px; width: 100%; }
+.hb.clic { cursor: pointer; }
+.hb:hover { background: var(--line2); }
+.hb:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.hb-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink2); }
+.hb-t { height: 14px; background: transparent; border-left: 1px solid var(--field); }
+.hb-t i { display: block; height: 100%; background: var(--info); border-radius: 0 4px 4px 0; transition: width .3s; }
+.hb-v { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.ctip { position: fixed; z-index: 50; pointer-events: none; opacity: 0; max-width: 340px; background: var(--ink); color: #fff; border-radius: 8px; padding: 8px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 6px 18px rgba(0,0,0,.18); transition: opacity .1s; }
+.ctip.on { opacity: 1; }
+.ctip span { color: #d6dae0; }
+.acoes-rel { white-space: nowrap; }
+.link.danger, .btn.danger { color: var(--bad); }
