@@ -171,6 +171,12 @@ async function registrarUso(env, userId, falhou) {
 }
 
 /* ------------------------------ chamada a IA ------------------------------ */
+// Cada modelo tem ate 75 s; com o reserva, a chamada inteira fica abaixo do limite do navegador (170 s)
+const LIMITE_IA = 75000;
+function erroTempo(e) {
+  if (e && (e.name === 'TimeoutError' || e.name === 'AbortError')) throw new Error('o modelo não respondeu em ' + LIMITE_IA / 1000 + ' segundos');
+  throw new Error('falha de comunicação com o provedor de IA (' + (e && e.message || e) + ')');
+}
 async function chamarModelo(cfg, env, modelo, system, user) {
   const chave = env.OPENROUTER_API_KEY;
   if (!chave) throw new Error('Chave da IA não configurada (segredo OPENROUTER_API_KEY).');
@@ -179,8 +185,9 @@ async function chamarModelo(cfg, env, modelo, system, user) {
     resp = await fetch((cfg.ai_url || 'https://api.anthropic.com/v1').replace(/\/$/, '') + '/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': chave, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: modelo, max_tokens: 8000, temperature: 0.1, system, messages: [{ role: 'user', content: user }] })
-    });
+      body: JSON.stringify({ model: modelo, max_tokens: 8000, temperature: 0.1, system, messages: [{ role: 'user', content: user }] }),
+      signal: AbortSignal.timeout(LIMITE_IA)
+    }).catch(erroTempo);
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error((j.error && j.error.message) || `HTTP ${resp.status}`);
     texto = (j.content || []).map((c) => c.text || '').join('');
@@ -194,7 +201,7 @@ async function chamarModelo(cfg, env, modelo, system, user) {
     const semSistema = /gemma/i.test(modelo || '');
     const body = { messages: semSistema ? [{ role: 'user', content: system + '\n\n' + user }] : [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.1 };
     if (!azure) body.model = modelo;
-    resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(LIMITE_IA) }).catch(erroTempo);
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok || j.error) {
       const e = j.error || {};
