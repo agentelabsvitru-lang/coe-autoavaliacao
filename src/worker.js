@@ -50,7 +50,8 @@ const ORIENTACOES_PADRAO = [
 ].map((o, i) => ({ id: 'o' + (i + 1), regras: o[0], texto: o[1], ativa: true, origem: 'Decisão inicial do CoE', em: '' }));
 
 // Colunas acrescentadas depois da primeira versao do banco (criadas sozinhas na primeira chamada)
-const COLUNAS_NOVAS = [['coe_status', "TEXT DEFAULT 'rascunho'"], ['submitted_at', 'TEXT'], ['reviewed_at', 'TEXT'], ['reviewer_id', 'INTEGER'], ['coe_opinion', 'TEXT']];
+const COLUNAS_NOVAS = [['coe_status', "TEXT DEFAULT 'rascunho'"], ['submitted_at', 'TEXT'], ['reviewed_at', 'TEXT'], ['reviewer_id', 'INTEGER'], ['coe_opinion', 'TEXT'],
+  ['review_started_at', 'TEXT'], ['analyst_seen_at', 'TEXT']];
 let esquemaOk = false;
 async function garantirEsquema(env) {
   if (esquemaOk) return;
@@ -262,9 +263,13 @@ rota('GET', '/api/me', 'user', async (c) => {
   const cfg = await lerConfig(c.env);
   const m = await c.env.DB.prepare("SELECT id, version, effective_date FROM manual_versions WHERE status = 'vigente' ORDER BY id DESC LIMIT 1").first();
   let pendentesCoe = 0;
-  if (c.user.role === 'admin') pendentesCoe = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM evaluations WHERE coe_status = 'enviado'").first()).n;
+  if (c.user.role === 'admin') pendentesCoe = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM evaluations WHERE coe_status IN ('enviado','em_analise')").first()).n;
+  // decisoes do CoE que o analista ainda nao viu
+  const { results: novidades } = await c.env.DB.prepare(
+    "SELECT id, process_name, round, coe_status, reviewed_at FROM evaluations WHERE user_id = ? AND coe_status IN ('aprovado','aprovado_ressalva','devolvido') AND analyst_seen_at IS NULL ORDER BY reviewed_at DESC LIMIT 20")
+    .bind(c.user.id).all();
   return json({ user: c.user, uso: await usoHoje(c.env, c.user.id), limites: { ativo: cfg.limits_enabled, porAnalista: cfg.limit_user, total: cfg.limit_total },
-    iaBloqueia: cfg.ai_bloqueia !== false, manual: m || null, pendentesCoe });
+    iaBloqueia: cfg.ai_bloqueia !== false, manual: m || null, pendentesCoe, novidades });
 });
 
 // ---- convite / primeiro acesso ----
@@ -508,7 +513,7 @@ rota('GET', '/api/coe/queue', 'admin', async (c) => {
     `SELECT e.id, e.process_name, e.app_code, e.flow_version, e.round, e.manual_version, e.created_at, e.b_open, e.r_open, e.confirm, e.ready,
             e.coe_status, e.submitted_at, e.reviewed_at, e.items, u.name AS analista, r.name AS revisor
      FROM evaluations e JOIN users u ON u.id = e.user_id LEFT JOIN users r ON r.id = e.reviewer_id
-     WHERE COALESCE(e.coe_status,'rascunho') <> 'rascunho' ORDER BY e.coe_status <> 'enviado', COALESCE(e.submitted_at, e.created_at) DESC LIMIT 300`).all();
+     WHERE COALESCE(e.coe_status,'rascunho') <> 'rascunho' ORDER BY e.coe_status NOT IN ('enviado','em_analise'), COALESCE(e.submitted_at, e.created_at) DESC LIMIT 300`).all();
   return json({ evaluations: results.map((e) => {
     const its = JSON.parse(e.items || '[]');
     const { items, ...rest } = e;
@@ -595,6 +600,18 @@ rota('POST', '/api/processes/delete', 'admin', async (c) => {
   return json({ ok: true, excluidas: results.length });
 });
 
+// CoE abriu a rodada enviada: passa para "Em analise" (o analista acompanha pela barra de progresso)
+rota('POST', '/api/evaluations/:id/start-review', 'admin', async (c) => {
+  const r = await c.env.DB.prepare("UPDATE evaluations SET coe_status = 'em_analise', review_started_at = ?, reviewer_id = ? WHERE id = ? AND coe_status = 'enviado'")
+    .bind(agora(), c.user.id, c.params.id).run();
+  return json({ ok: true, mudou: r.meta.changes > 0 });
+});
+// Analista viu a decisao do CoE
+rota('POST', '/api/evaluations/:id/seen', 'user', async (c) => {
+  await c.env.DB.prepare('UPDATE evaluations SET analyst_seen_at = ? WHERE id = ? AND user_id = ? AND analyst_seen_at IS NULL').bind(agora(), c.params.id, c.user.id).run();
+  return json({ ok: true });
+});
+
 const DECISOES_ITEM = ['aceito', 'ressalva', 'nao_aceito'];
 const DECISOES_GERAIS = ['aprovado', 'aprovado_ressalva', 'devolvido'];
 rota('POST', '/api/evaluations/:id/review', 'admin', async (c) => {
@@ -621,8 +638,8 @@ rota('POST', '/api/evaluations/:id/review', 'admin', async (c) => {
   const parecer = String(b.parecer || '').trim().slice(0, 4000);
   if (b.decisao !== 'aprovado' && parecer.length < 10) throw new HttpError(400, 'Escreva o parecer do CoE com as instruções para o analista.');
   const opinion = { decisao: b.decisao, parecer, por: c.user.name, em: agora() };
-  await c.env.DB.prepare('UPDATE evaluations SET items = ?, coe_status = ?, coe_opinion = ?, reviewed_at = ?, reviewer_id = ? WHERE id = ?')
-    .bind(JSON.stringify(items), b.decisao, JSON.stringify(opinion), agora(), c.user.id, e.id).run();
+  await c.env.DB.prepare('UPDATE evaluations SET items = ?, coe_status = ?, coe_opinion = ?, reviewed_at = ?, reviewer_id = ?, analyst_seen_at = NULL, review_started_at = COALESCE(review_started_at, ?) WHERE id = ?')
+    .bind(JSON.stringify(items), b.decisao, JSON.stringify(opinion), agora(), c.user.id, agora(), e.id).run();
   // decisoes que o CoE quer que a IA siga daqui em diante
   const novas = (Array.isArray(b.orientacoes) ? b.orientacoes : []).map((o) => limparOrientacao({
     ...o, origem: 'Decisão na avaliação de ' + e.process_name + ' (rodada ' + e.round + ')' }, c.user.name)).filter((o) => o.texto);
@@ -714,7 +731,7 @@ function filtrosRelatorio(q, semUltima) {
   if (q.get('manual')) { cond.push('e.manual_version = ?'); args.push(q.get('manual')); }
   if (q.get('situacao') === 'pronto') cond.push('e.ready = 1');
   if (q.get('situacao') === 'corrigir') cond.push('e.ready = 0');
-  if (['rascunho', 'enviado', 'aprovado', 'aprovado_ressalva', 'devolvido'].includes(q.get('coe'))) { cond.push("COALESCE(e.coe_status,'rascunho') = ?"); args.push(q.get('coe')); }
+  if (['rascunho', 'enviado', 'em_analise', 'aprovado', 'aprovado_ressalva', 'devolvido'].includes(q.get('coe'))) { cond.push("COALESCE(e.coe_status,'rascunho') = ?"); args.push(q.get('coe')); }
   if (!semUltima && q.get('ultima') !== '0') cond.push(`e.id = (SELECT MAX(x.id) FROM evaluations x WHERE x.user_id = e.user_id AND lower(x.process_name) = lower(e.process_name) AND COALESCE(x.app_code,'') = COALESCE(e.app_code,''))`);
   return { cond, args };
 }
@@ -779,13 +796,13 @@ rota('GET', '/api/reports/painel', 'admin', async (c) => {
     kpis: {
       avaliacoes: results.length, processos: procs.length,
       mediaRodadas: procs.length ? Math.round(procs.reduce((a, p) => a + rodadas[p], 0) / procs.length * 10) / 10 : 0,
-      aprovados: aprov.length, aguardando: situacao.enviado || 0, devolvidos: situacao.devolvido || 0
+      aprovados: aprov.length, aguardando: (situacao.enviado || 0) + (situacao.em_analise || 0), devolvidos: situacao.devolvido || 0
     },
     regras: Object.values(regras).map((r) => ({ regra: r.regra, item: r.item, ocorrencias: r.ocorrencias, processos: r.processos.size, lista: [...r.processos].slice(0, 6).join(', ') }))
       .sort((a, b) => b.ocorrencias - a.ocorrencias).slice(0, 12),
     rodadas: procs.map((p) => ({ rotulo: nomeProc[p], valor: rodadas[p], situacao: ultima[p].coe_status })).sort((a, b) => b.valor - a.valor).slice(0, 15),
     analistas: ord(porAnalista), avaliadores: ord(porAvaliador), areas: ord(porArea),
-    situacao: ['rascunho', 'enviado', 'aprovado', 'aprovado_ressalva', 'devolvido'].map((k) => ({ rotulo: k, valor: situacao[k] || 0 }))
+    situacao: ['rascunho', 'enviado', 'em_analise', 'aprovado', 'aprovado_ressalva', 'devolvido'].map((k) => ({ rotulo: k, valor: situacao[k] || 0 }))
   });
 });
 function capitulo(rule) {
