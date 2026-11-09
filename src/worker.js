@@ -45,7 +45,8 @@ const ORIENTACOES_PADRAO = [
   ['3.7', 'Botões nativos "Enviar solicitação" (abertura) e "Concluir" são válidos para o histórico.'],
   ['R5, R6', 'Por regra de negócio o SLA é em horas corridas; "horas úteis" desligado não é não conformidade.'],
   ['3.6', 'O modelo administrativo da pesquisa de satisfação (seção 3.6) é padrão do CoE: seus campos, script e textos não devem ser apontados.'],
-  ['1.3, P2', 'O pool com o nome do processo envolvendo todas as raias é aceito pelo CoE. Ele não é raia nem papel: não aplique a ele as regras de nomenclatura de raia.']
+  ['1.3, P2', 'O pool com o nome do processo envolvendo todas as raias é aceito pelo CoE. Ele não é raia nem papel: não aplique a ele as regras de nomenclatura de raia.'],
+  ['1.3', 'Gateway: o "?" só é exigido quando a decisão é uma pergunta de Sim/Não (ex.: "Solicitação aprovada?"). Gateway cujo campo é uma lista de ações ou opções (ex.: "Ação do atendimento", com opções "Devolver para o solicitante, Encerrar") não é pergunta e fica sem "?": está conforme. Use a lista gateways do contexto para ver o campo e as opções.']
 ].map((o, i) => ({ id: 'o' + (i + 1), regras: o[0], texto: o[1], ativa: true, origem: 'Decisão inicial do CoE', em: '' }));
 
 // Colunas acrescentadas depois da primeira versao do banco (criadas sozinhas na primeira chamada)
@@ -566,18 +567,32 @@ rota('POST', '/api/evaluations/:id/submit', 'user', async (c) => {
 });
 
 // Exclusao de uma rodada (so admin): apaga tambem os prints guardados
+async function apagarAvaliacao(env, id) {
+  let cursor;
+  do {
+    const l = await env.PRINTS.list({ prefix: 'print:' + id + ':', cursor });
+    await Promise.all(l.keys.map((k) => env.PRINTS.delete(k.name)));
+    cursor = l.list_complete ? null : l.cursor;
+  } while (cursor);
+  await env.DB.prepare('DELETE FROM evaluations WHERE id = ?').bind(id).run();
+}
 rota('DELETE', '/api/evaluations/:id', 'admin', async (c) => {
   const e = await c.env.DB.prepare('SELECT id, process_name, round FROM evaluations WHERE id = ?').bind(c.params.id).first();
   if (!e) throw new HttpError(404, 'Autoavaliação não encontrada.');
-  let cursor;
-  do {
-    const l = await c.env.PRINTS.list({ prefix: 'print:' + e.id + ':', cursor });
-    await Promise.all(l.keys.map((k) => c.env.PRINTS.delete(k.name)));
-    cursor = l.list_complete ? null : l.cursor;
-  } while (cursor);
-  await c.env.DB.prepare('DELETE FROM evaluations WHERE id = ?').bind(e.id).run();
+  await apagarAvaliacao(c.env, e.id);
   await logConfig(c.env, c.user.id, 'Autoavaliação #' + e.id + ' excluída (' + e.process_name + ', rodada ' + e.round + ')');
-  return json({ ok: true });
+  return json({ ok: true, excluidas: 1 });
+});
+// Exclui o processo inteiro: todas as rodadas, de todos os analistas, com o mesmo nome e app
+rota('POST', '/api/processes/delete', 'admin', async (c) => {
+  const b = await corpo(c.req);
+  const nome = String(b.process_name || '').trim();
+  if (!nome) throw new HttpError(400, 'Informe o processo.');
+  const { results } = await c.env.DB.prepare("SELECT id FROM evaluations WHERE lower(trim(process_name)) = lower(?) AND COALESCE(app_code,'') = ?")
+    .bind(nome, String(b.app_code || '')).all();
+  for (const r of results) await apagarAvaliacao(c.env, r.id);
+  await logConfig(c.env, c.user.id, 'Processo excluído: ' + nome + (b.app_code ? ' (app ' + b.app_code + ')' : '') + ', ' + results.length + ' rodada(s)');
+  return json({ ok: true, excluidas: results.length });
 });
 
 const DECISOES_ITEM = ['aceito', 'ressalva', 'nao_aceito'];
