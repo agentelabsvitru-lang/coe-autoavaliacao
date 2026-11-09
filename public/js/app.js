@@ -66,9 +66,42 @@
   // Recomendado em aberto nao bloqueia: aparece como melhoria sugerida
   function rotulo(i) { return i.status === 'aberto' && i.sev === 'R' ? 'Melhoria sugerida' : (STATUS[i.status] || i.status); }
   function stItem(i) { return i.status === 'aberto' && i.sev === 'R' ? st('melhoria', 'Melhoria sugerida') : st(i.status); }
-  var COE_ST = { rascunho: 'Não enviada ao CoE', enviado: 'Aguardando CoE', aprovado: 'Aprovado pelo CoE', aprovado_ressalva: 'Aprovado com ressalva', devolvido: 'Devolvido para correção' };
+  var COE_ST = { rascunho: 'Não enviada ao CoE', enviado: 'Aguardando CoE', em_analise: 'Em análise pelo CoE', aprovado: 'Aprovado pelo CoE', aprovado_ressalva: 'Aprovado com ressalva', devolvido: 'Devolvido para correção' };
   var DEC_ITEM = { aceito: 'Justificativa aceita', ressalva: 'Aceito com ressalva', nao_aceito: 'Não aceito' };
   function stCoe(s) { return st('coe-' + (s || 'rascunho'), COE_ST[s || 'rascunho']); }
+  function aguardandoCoe(s) { return s === 'enviado' || s === 'em_analise'; }
+  // Barra de progresso da rodada no CoE: autoavaliacao > enviado > em analise > decisao
+  function progressoCoe(ev) {
+    var s = ev.coe_status || 'rascunho', op = ev.coe_opinion;
+    var decidido = ['aprovado', 'aprovado_ressalva', 'devolvido'].indexOf(s) >= 0;
+    var nivel = decidido ? 4 : s === 'em_analise' ? 3 : s === 'enviado' ? 2 : 1;
+    var etapas = [
+      ['Autoavaliação', dataBR(ev.created_at, true)],
+      ['Enviado ao CoE', ev.submitted_at ? dataBR(ev.submitted_at, true) : 'pendente'],
+      ['Em análise pelo CoE', ev.review_started_at ? dataBR(ev.review_started_at, true) + (ev.revisor ? ' · ' + ev.revisor : '') : nivel >= 3 ? '' : 'aguardando'],
+      [decidido ? COE_ST[s] : 'Decisão do CoE', decidido && op ? dataBR(op.em, true) + ' · ' + op.por : 'aguardando']
+    ];
+    var cor = s === 'devolvido' ? 'bad' : s === 'aprovado_ressalva' ? 'warn' : 'ok';
+    var pct = [0, 0, 34, 67, 100][nivel];
+    return '<section class="card progresso" aria-label="Andamento no CoE"><div class="pg-trilho"><i class="pg-' + (decidido ? cor : 'and') + '" style="width:' + pct + '%"></i></div>' +
+      '<ol class="pg-etapas">' + etapas.map(function (e, i) {
+        var n = i + 1, est = n < nivel || (n === nivel && (decidido || n === 1)) ? 'feito' : n === nivel ? 'atual' : 'futuro';
+        if (n === 4 && decidido) est += ' ' + cor;
+        return '<li class="' + est + '"' + (n === nivel ? ' aria-current="step"' : '') + '><span class="pg-ponto">' + (est.indexOf('feito') === 0 ? '✓' : n) + '</span><b>' + h(e[0]) + '</b><small>' + h(e[1]) + '</small></li>';
+      }).join('') + '</ol></section>';
+  }
+  // Mensagem em janela (enviado ao CoE, decisao do CoE)
+  function mensagem(titulo, corpoHtml, classe, botao) {
+    return new Promise(function (ok) {
+      var d = document.createElement('dialog');
+      d.className = 'msg ' + (classe || '');
+      d.innerHTML = '<h2>' + h(titulo) + '</h2><div class="msg-corpo">' + corpoHtml + '</div><div class="row end"><button class="btn primary" value="ok">' + h(botao || 'Entendi') + '</button></div>';
+      document.body.appendChild(d);
+      d.querySelector('button').addEventListener('click', function () { d.close(); });
+      d.addEventListener('close', function () { d.remove(); ok(); });
+      d.showModal();
+    });
+  }
   // Pendencia que impede o envio sem justificativa (mesma regra do servidor)
   function exigeJust(i) { return (i.status === 'aberto' && i.sev === 'B') || i.status === 'confirmar'; }
   var MIN_JUST = 15;
@@ -83,7 +116,7 @@
     return '<div class="shell"><aside class="side">' +
       '<div class="brand"><div class="brand-mark">CoE</div><div><b>Autoavaliação Zeev</b><small>Padrões CoE Vitru</small></div></div>' +
       '<nav class="nav" aria-label="Menu principal"><span class="nav-title">Analista</span>' +
-      item('#/nova', 'Nova autoavaliação') + item('#/historico', 'Minhas autoavaliações') +
+      item('#/nova', 'Nova autoavaliação') + item('#/historico', 'Minhas autoavaliações' + (me.novidades && me.novidades.length ? ' <span class="badge">' + me.novidades.length + '</span>' : '')) +
       (admin ? '<span class="nav-title sep">Administração CoE</span>' +
         item('#/admin/avaliacoes', 'Avaliações recebidas' + (me.pendentesCoe ? ' <span class="badge">' + me.pendentesCoe + '</span>' : '')) +
         item('#/admin/padroes', 'Padrões do manual') + item('#/admin/orientacoes', 'Orientações à IA') +
@@ -93,7 +126,14 @@
       (lim.ativo ? '<div class="bar"><i style="width:' + pct + '%"></i></div>' : '') + '<small>Renova à meia-noite</small></div>' +
       '<div class="me"><div class="avatar">' + h(iniciais(me.user.name)) + '</div><div><b>' + h(me.user.name) + '</b><small>' + (admin ? 'Admin CoE' : 'Analista') + '</small></div>' +
       '<button type="button" id="sair">Sair</button></div></div></aside>' +
-      '<main class="main"><div class="wrap">' + conteudo + '</div></main></div>';
+      '<main class="main"><div class="wrap">' + avisoNovidades(ativo) + conteudo + '</div></main></div>';
+  }
+  // Aviso de decisao do CoE ainda nao vista (some quando o analista abre a rodada)
+  function avisoNovidades(ativo) {
+    var nv = S.me.novidades || [];
+    if (!nv.length || /^#\/resultado/.test(location.hash)) return '';
+    return '<div class="banner info aviso-coe" role="status"><div><b>O CoE concluiu a análise de ' + (nv.length === 1 ? 'uma autoavaliação sua' : nv.length + ' autoavaliações suas') + '</b>' +
+      nv.map(function (n) { return '<a href="#/resultado/' + n.id + '">' + h(n.process_name) + ' · rodada ' + n.round + '</a>: ' + h(COE_ST[n.coe_status]); }).join('<br>') + '</div></div>';
   }
   function bindLayout() {
     on('#sair', 'click', async function () { await api('/api/logout', { method: 'POST', body: {} }).catch(function () {}); S.me = null; go('#/login'); });
@@ -115,7 +155,7 @@
       if (!m) continue;
       try {
         if (rotas[i][2]) {
-          if (!S.me) { try { await carregarMe(); } catch (e) { return; } }
+          try { await carregarMe(); } catch (e) { if (!S.me) return; }
           if (rotas[i][2] === 'admin' && S.me.user.role !== 'admin') { go('#/nova'); return; }
         }
         await rotas[i][1](m[1]);
@@ -292,6 +332,11 @@
     var ev = await api('/api/evaluations/' + id);
     var dono = ev.user_id === S.me.user.id;
     var admin = S.me.user.role === 'admin';
+    // CoE abriu a rodada enviada: marca "Em analise" para o analista acompanhar
+    if (admin && ev.coe_status === 'enviado' && !dono) {
+      try { await api('/api/evaluations/' + ev.id + '/start-review', { method: 'POST', body: {} }); ev.coe_status = 'em_analise'; ev.review_started_at = new Date().toISOString(); ev.revisor = S.me.user.name; } catch (e) { /* segue como enviado */ }
+    }
+    var decisaoNova = dono && ev.coe_opinion && !ev.analyst_seen_at;
     var editavel = dono && ev.coe_status === 'rascunho';
     var revisando = admin && ev.coe_status !== 'rascunho';
     var filtro = { sev: 'todos', status: 'pend', origem: '' };
@@ -305,6 +350,8 @@
 
     function bannerHtml(t) {
       var op = ev.coe_opinion;
+      if (ev.coe_status === 'em_analise') return '<div class="banner info" role="status"><div><b>Em análise pelo CoE' + (ev.revisor ? ' · ' + h(ev.revisor) : '') + '</b>' +
+        (admin ? 'Avalie as justificativas abaixo e registre a decisão no fim da página.' : 'O CoE está avaliando esta rodada. Você recebe um aviso aqui quando a decisão for registrada.') + '</div></div>';
       if (ev.coe_status === 'enviado') return '<div class="banner info" role="status"><div><b>Enviado ao CoE em ' + h(dataBR(ev.submitted_at, true)) + '</b>' +
         (admin ? 'Avalie as justificativas abaixo e registre a decisão no fim da página.' : 'Aguardando a avaliação do CoE. Esta rodada não pode mais ser alterada.') + '</div></div>';
       if (op) {
@@ -382,6 +429,7 @@
         '<p class="lead">' + [ev.app_code ? 'App ' + h(ev.app_code) : '', ev.flow_version ? 'versão ' + h(ev.flow_version) : '', h(dataBR(ev.created_at, true)),
           ev.manual_version ? 'Manual v' + h(ev.manual_version) : 'sem manual', ev.with_ai ? 'com IA (' + h(ev.model) + ')' : 'sem IA', dono ? '' : 'analista: ' + h(ev.analista)].filter(Boolean).join(' · ') + '</p><div>' + stCoe(ev.coe_status) + '</div></div>' +
         '<div class="row">' + (admin ? '<button class="btn danger" id="excluir">Excluir</button>' : '') + '<button class="btn" id="xls">Exportar Excel</button><button class="btn" id="pdf">Exportar PDF</button>' + (dono ? '<a class="btn primary" href="#/nova">Nova rodada</a>' : '') + '</div></div>' +
+        (ev.coe_status !== 'rascunho' ? progressoCoe(ev) : '') +
         bannerHtml(t) +
         (ev.summary && ev.summary.avisoIA ? '<div class="note warn">' + h(ev.summary.avisoIA) + '</div>' : '') +
         '<div class="grid g4"><div class="tile"><span>Bloqueantes abertos</span><b style="color:var(--bad)">' + t.bAbertos + '</b><small>de ' + nB + ' avaliados</small></div>' +
@@ -464,7 +512,10 @@
       if (!confirm(nj ? 'Enviar ao CoE com ' + nj + ' pendência(s) justificada(s)? Depois do envio a rodada não pode mais ser alterada.' : 'Enviar esta rodada ao CoE? Depois do envio ela não pode mais ser alterada.')) return;
       try {
         await api('/api/evaluations/' + ev.id + '/submit', { method: 'POST', body: { items: ev.items } });
-        toast('Enviado ao CoE.'); viewResultado(ev.id);
+        await viewResultado(ev.id);
+        window.scrollTo(0, 0);
+        await mensagem('Enviado ao CoE', '<p>A rodada ' + ev.round + ' de <b>' + h(ev.process_name) + '</b> foi enviada' + (nj ? ' com ' + nj + ' justificativa(s)' : '') + '.</p>' +
+          '<p>Acompanhe o andamento pela barra de progresso no topo desta tela. Quando o CoE registrar a decisão, aparece um aviso no app e em "Minhas autoavaliações".</p>', 'info');
       } catch (e) { toast(e.message); }
     }
     async function registrarDecisao() {
@@ -482,6 +533,20 @@
       } catch (e) { err.textContent = e.message; }
     }
     desenhar();
+    // Mensagem ao analista na primeira vez que abre a rodada depois da decisao do CoE
+    if (decisaoNova) {
+      var op = ev.coe_opinion, cls = op.decisao === 'devolvido' ? 'bad' : op.decisao === 'aprovado_ressalva' ? 'warn' : 'ok';
+      var instr = ev.items.filter(function (i) { return i.coe && (i.coe.instrucao || i.coe.decisao !== 'aceito'); });
+      api('/api/evaluations/' + ev.id + '/seen', { method: 'POST', body: {} }).then(carregarMe).then(function () {
+        var nav = $('.nav'), tmp = document.createElement('div'); tmp.innerHTML = layout('#/historico', '');
+        if (nav && tmp.querySelector('.nav')) nav.innerHTML = tmp.querySelector('.nav').innerHTML;
+      }).catch(function () {});
+      await mensagem('O CoE concluiu a análise: ' + COE_ST[op.decisao],
+        '<p><b>' + h(ev.process_name) + ' · rodada ' + ev.round + '</b><br><span class="small muted">' + h(op.por) + ' em ' + h(dataBR(op.em, true)) + '</span></p>' +
+        (op.parecer ? '<p style="white-space:pre-wrap">' + h(op.parecer) + '</p>' : '') +
+        (instr.length ? '<p class="small"><b>' + instr.length + ' item(ns) com instrução do CoE</b>: ' + instr.map(function (i) { return h(i.id) + ' (' + h(DEC_ITEM[i.coe.decisao]) + ')'; }).join(', ') + '. Veja os detalhes na tabela.</p>' : '') +
+        (op.decisao === 'devolvido' ? '<p>Corrija os pontos indicados e envie uma nova rodada.</p>' : op.decisao === 'aprovado_ressalva' ? '<p>Atenda às ressalvas antes da publicação.</p>' : '<p>Processo liberado pelo CoE.</p>'), cls);
+    }
   }
 
   /* ------------------------------ exportacao ------------------------------ */
@@ -899,7 +964,7 @@
       } catch (e) { toast(e.message); }
     }
     // ---------- painel grafico ----------
-    var COR_COE = { rascunho: '#8A94A3', enviado: '#33475F', aprovado: '#1E6B34', aprovado_ressalva: '#B07A00', devolvido: '#A11A1A' };
+    var COR_COE = { rascunho: '#8A94A3', enviado: '#33475F', em_analise: '#2a78d6', aprovado: '#1E6B34', aprovado_ressalva: '#B07A00', devolvido: '#A11A1A' };
     // paleta categorica validada (ordem fixa); pizza/rosca agrupam o excedente em "Outros"
     var PALETA = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6', '#8A94A3'];
     var FORMAS = [['barras', 'Barras'], ['colunas', 'Colunas'], ['pizza', 'Pizza'], ['rosca', 'Rosca'], ['tabela', 'Tabela']];
@@ -1128,19 +1193,19 @@
     var r = await api('/api/coe/queue');
     var aba = 'enviado';
     function desenhar() {
-      var lista = r.evaluations.filter(function (e) { return aba === 'todas' || (aba === 'enviado' ? e.coe_status === 'enviado' : e.coe_status !== 'enviado'); });
+      var lista = r.evaluations.filter(function (e) { return aba === 'todas' || (aba === 'enviado' ? aguardandoCoe(e.coe_status) : !aguardandoCoe(e.coe_status)); });
       var n = function (f) { return r.evaluations.filter(f).length; };
       $app.innerHTML = layout('#/admin/avaliacoes',
         '<div class="head"><div><h1>Avaliações recebidas</h1><p class="lead">Rodadas que os analistas enviaram ao CoE. Pendências bloqueantes chegam com a justificativa do analista: aceite, aceite com ressalva ou devolva, sempre com instrução.</p></div></div>' +
         '<section class="card flush"><div class="row between" style="padding:16px 18px;border-bottom:1px solid var(--line)"><div class="tabs" role="tablist">' +
-        [['enviado', 'Aguardando CoE · ' + n(function (e) { return e.coe_status === 'enviado'; })], ['avaliadas', 'Avaliadas · ' + n(function (e) { return e.coe_status !== 'enviado'; })], ['todas', 'Todas · ' + r.evaluations.length]].map(function (x) {
+        [['enviado', 'Aguardando CoE · ' + n(function (e) { return aguardandoCoe(e.coe_status); })], ['avaliadas', 'Avaliadas · ' + n(function (e) { return !aguardandoCoe(e.coe_status); })], ['todas', 'Todas · ' + r.evaluations.length]].map(function (x) {
           return '<button type="button" role="tab" data-aba="' + x[0] + '" class="' + (aba === x[0] ? 'on' : '') + '" aria-selected="' + (aba === x[0]) + '">' + h(x[1]) + '</button>'; }).join('') + '</div></div>' +
         '<div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>Processo</th><th>Analista</th><th>Rodada</th><th>Enviado em</th><th>Bloqueantes abertos</th><th>Justificados</th><th>Situação</th><th><span class="sr">Ações</span></th></tr></thead><tbody>' +
         (lista.length ? lista.map(function (e) {
           return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + '</td><td>' + h(e.analista) + '</td><td>' + e.round + '</td>' +
             '<td>' + h(dataBR(e.submitted_at, true)) + '</td><td style="font-weight:700;color:' + (e.b_open ? 'var(--bad)' : 'var(--ok)') + '">' + e.b_open + '</td><td>' + e.justificados + '</td>' +
-            '<td>' + stCoe(e.coe_status) + (e.revisor ? '<div class="tiny muted">' + h(e.revisor) + ' · ' + h(dataBR(e.reviewed_at, true)) + '</div>' : '') + '</td>' +
-            '<td><a href="#/resultado/' + e.id + '"><b>' + (e.coe_status === 'enviado' ? 'Avaliar' : 'Abrir') + '</b></a></td></tr>';
+            '<td>' + stCoe(e.coe_status) + (e.revisor && !aguardandoCoe(e.coe_status) ? '<div class="tiny muted">' + h(e.revisor) + ' · ' + h(dataBR(e.reviewed_at, true)) + '</div>' : '') + '</td>' +
+            '<td><a href="#/resultado/' + e.id + '"><b>' + (aguardandoCoe(e.coe_status) ? 'Avaliar' : 'Abrir') + '</b></a></td></tr>';
         }).join('') : '<tr><td colspan="8" class="muted">' + (aba === 'enviado' ? 'Nada aguardando o CoE.' : 'Nenhuma avaliação.') + '</td></tr>') +
         '</tbody></table></div></section>');
       bindLayout();
