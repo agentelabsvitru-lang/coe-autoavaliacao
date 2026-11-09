@@ -333,7 +333,7 @@
     var dono = ev.user_id === S.me.user.id;
     var admin = S.me.user.role === 'admin';
     // CoE abriu a rodada enviada: marca "Em analise" para o analista acompanhar
-    if (admin && ev.coe_status === 'enviado' && !dono) {
+    if (admin && ev.coe_status === 'enviado') {
       try { await api('/api/evaluations/' + ev.id + '/start-review', { method: 'POST', body: {} }); ev.coe_status = 'em_analise'; ev.review_started_at = new Date().toISOString(); ev.revisor = S.me.user.name; } catch (e) { /* segue como enviado */ }
     }
     var decisaoNova = dono && ev.coe_opinion && !ev.analyst_seen_at;
