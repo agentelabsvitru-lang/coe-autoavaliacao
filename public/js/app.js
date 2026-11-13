@@ -146,7 +146,13 @@
   function rotulo(i) { return i.status === 'aberto' && i.sev === 'R' ? 'Melhoria sugerida' : (STATUS[i.status] || i.status); }
   function stItem(i) { return i.status === 'aberto' && i.sev === 'R' ? st('melhoria', 'Melhoria sugerida') : st(i.status); }
   var COE_ST = { rascunho: 'Não enviada ao CoE', enviado: 'Aguardando CoE', em_analise: 'Em análise pelo CoE', aprovado: 'Aprovado pelo CoE', aprovado_ressalva: 'Aprovado com ressalva', devolvido: 'Devolvido para correção' };
-  var DEC_ITEM = { aceito: 'Justificativa aceita', ressalva: 'Aceito com ressalva', nao_aceito: 'Não aceito' };
+  var DEC_ITEM = { aceito: 'Aceito', ressalva: 'Aceito com ressalva', nao_aceito: 'Não aceito', na: 'N/A' };
+  var DEC_ORDEM = ['aceito', 'ressalva', 'nao_aceito', 'na'];
+  var DEC_ICO = { aceito: '✓', ressalva: '!', nao_aceito: '✕', na: '–' };
+  // "Aceito" em item com justificativa = justificativa aceita
+  function decLabel(coe, item) { return coe.decisao === 'aceito' && item && item.just ? 'Aceito (justificativa aceita)' : (DEC_ITEM[coe.decisao] || coe.decisao); }
+  function decPill(k, label) { return '<span class="decpill dec-' + h(k) + '"><span aria-hidden="true">' + (DEC_ICO[k] || '') + '</span>' + h(label || DEC_ITEM[k] || k) + '</span>'; }
+  function tagRetorno(e) { return e.anterior_status === 'devolvido' ? ' ' + st('retorno', 'Retorno de devolução') : ''; }
   function stCoe(s) { return st('coe-' + (s || 'rascunho'), COE_ST[s || 'rascunho']); }
   function aguardandoCoe(s) { return s === 'enviado' || s === 'em_analise'; }
   // Barra de progresso da rodada no CoE: autoavaliacao > enviado > em analise > decisao
@@ -193,7 +199,7 @@
     function item(href, txt) { return '<a href="' + href + '" class="' + (ativo === href ? 'active' : '') + '">' + txt + '</a>'; }
     var admin = me.user.role === 'admin';
     return '<div class="shell"><aside class="side">' +
-      '<div class="brand"><div class="brand-mark">CoE</div><div><b>Autoavaliação Zeev</b><small>Padrões CoE Vitru</small></div></div>' +
+      '<div class="brand brand-logo"><img src="/coe-logo-horizontal-negativo.svg" alt="CoE · Centro de Excelência · Governança de Processos Vitru"><small>Autoavaliação Zeev</small></div>' +
       '<nav class="nav" aria-label="Menu principal"><span class="nav-title">Analista</span>' +
       item('#/nova', 'Nova autoavaliação') + item('#/historico', 'Minhas autoavaliações' + (me.novidades && me.novidades.length ? ' <span class="badge">' + me.novidades.length + '</span>' : '')) +
       (admin ? '<span class="nav-title sep">Administração CoE</span>' +
@@ -252,7 +258,7 @@
 
   /* ------------------------------ login e acesso ------------------------------ */
   function authBox(conteudo) {
-    return '<div class="auth"><div class="box"><div class="brand"><div class="brand-mark">CoE</div><div><b style="font-size:18px">Autoavaliação Zeev</b>' +
+    return '<div class="auth"><div class="box"><div class="brand"><img class="brand-ico" src="/coe-icone.svg" alt="CoE"><div><b style="font-size:18px">Autoavaliação Zeev</b>' +
       '<small style="color:var(--muted);font-size:13px">Centro de Excelência · Vitru Educação</small></div></div>' + conteudo + '</div></div>';
   }
   async function viewLogin() {
@@ -440,6 +446,67 @@
     function pendentes() { return ev.items.filter(exigeJust); }
     function semJust() { return pendentes().filter(function (i) { return !i.just || i.just.trim().length < MIN_JUST; }); }
     function revisavel(i) { return !!i.just || ['aberto', 'confirmar', 'verificar', 'liberado'].indexOf(i.status) >= 0; }
+    var LIM_RES = (S.me.regrasCoe && S.me.regrasCoe.limiteRessalva) || 0;
+    // rodada anterior devolvida: o que o CoE apontou em cada regra
+    var prevPorItem = {}, prevPorRegra = {};
+    if (ev.anterior) ev.anterior.itens.forEach(function (i) { prevPorItem[i.rule + '|' + i.item] = i; if (!prevPorRegra[i.rule]) prevPorRegra[i.rule] = i; });
+    function prevDe(i) { return prevPorItem[i.rule + '|' + i.item] || prevPorRegra[i.rule] || null; }
+    // percentual de ressalvas sobre os itens com decisao (N/A fica fora)
+    function contagem() {
+      var c = { ress: 0, nao: 0, decid: 0, lim: LIM_RES };
+      Object.keys(rev).forEach(function (k) {
+        var d = rev[k].decisao; if (!d || d === 'na') return;
+        c.decid++; if (d === 'ressalva') c.ress++; if (d === 'nao_aceito') c.nao++;
+      });
+      c.pct = c.decid ? Math.round(c.ress / c.decid * 100) : 0;
+      c.atingido = !!c.lim && c.decid > 0 && c.pct >= c.lim;
+      return c;
+    }
+    function contadorHtml() {
+      var c = contagem();
+      var txt = '<b>Ressalvas: ' + c.ress + ' de ' + c.decid + ' item(ns) com decisão (' + c.pct + '%)</b>' + (c.lim ? ' · limite ' + c.lim + '%' : ' · sem limite configurado') + '. N/A não entra na conta.';
+      if (c.atingido) txt = '<b>Limite de ressalvas atingido: ' + c.pct + '% (limite ' + c.lim + '%).</b> O app sugere "Devolvido para correção".';
+      return '<div class="note ' + (c.atingido ? 'bad' : c.ress ? 'warn' : 'info') + '" style="margin:0">' + txt + '</div>';
+    }
+    function anteriorHtml() {
+      var a = ev.anterior; if (!a) return '';
+      var op = a.coe_opinion || {};
+      return '<section class="card retorno"><div class="row between"><h2>Apontamentos da rodada ' + a.round + '</h2>' + st('retorno', 'Retorno de devolução') + '</div>' +
+        '<p class="small muted" style="margin:0">' + (op.por ? 'Devolvida por ' + h(op.por) + ' em ' + h(dataBR(op.em, true)) + '. ' : '') +
+        (dono ? 'Confira se cada ponto abaixo foi corrigido nesta rodada.' : 'Confira se cada ponto foi corrigido nesta rodada.') + ' <a href="#/resultado/' + a.id + '">Abrir a rodada ' + a.round + '</a></p>' +
+        (op.parecer ? '<div class="prev-parecer"><b class="small">Parecer do CoE</b><div style="white-space:pre-wrap">' + h(op.parecer) + '</div></div>' : '') +
+        (a.itens.length ? '<ul class="prev-lista">' + a.itens.map(function (i) {
+          return '<li>' + decPill(i.coe.decisao) + ' <b>' + h(i.id) + '</b> <span class="muted small">regra ' + h(i.rule) + '</span> ' + h(i.item) +
+            (i.coe.instrucao ? '<div class="small" style="white-space:pre-wrap">' + h(i.coe.instrucao) + '</div>' : '') + '</li>';
+        }).join('') + '</ul>' : '<p class="small muted" style="margin:0">Nenhum item com decisão "Não aceito" ou "Aceito com ressalva" na rodada anterior.</p>') + '</section>';
+    }
+    // Se o parecer ainda e a sugestao gerada (sem edicao manual), acompanha as mudancas de decisao
+    var ultimaSug = null;
+    function atualizarSugestao() {
+      var ta = $('#rpar');
+      if (!ta || ultimaSug === null || ta.value !== ultimaSug) return;
+      ta.value = ultimaSug = gerarParecer(); revGeral.parecer = ta.value;
+    }
+    // Sugestao de parecer a partir das decisoes e instrucoes de cada item
+    function gerarParecer() {
+      var c = contagem();
+      var dec = revGeral.decisao || (c.nao || c.atingido ? 'devolvido' : c.ress ? 'aprovado_ressalva' : 'aprovado');
+      var nao = [], ress = [], acc = 0, na = 0;
+      ev.items.forEach(function (i, n) {
+        var r = rev[n]; if (!r || !r.decisao) return;
+        var linha = '- ' + i.id + ' (regra ' + i.rule + ') ' + i.item + ': ' + ((r.instrucao || '').trim() || (i.fix ? 'Como corrigir: ' + i.fix : 'ajustar conforme o Manual de Padrões Zeev.'));
+        if (r.decisao === 'nao_aceito') nao.push(linha); else if (r.decisao === 'ressalva') ress.push(linha); else if (r.decisao === 'na') na++; else acc++;
+      });
+      var t = ['Decisão do CoE: ' + COE_ST[dec] + '.'];
+      if (c.atingido) t.push('Limite de ressalvas atingido: ' + c.ress + ' de ' + c.decid + ' itens avaliados com ressalva (' + c.pct + '%; limite ' + c.lim + '%).');
+      else if (c.ress) t.push('Itens aceitos com ressalva: ' + c.ress + ' de ' + c.decid + ' itens avaliados (' + c.pct + '%).');
+      if (ev.anterior) t.push('Rodada de retorno após a devolução da rodada ' + ev.anterior.round + '.');
+      if (nao.length) t.push('', 'Itens devolvidos para correção:', nao.join('\n'));
+      if (ress.length) t.push('', dec === 'devolvido' ? 'Itens aceitos com ressalva (corrigir também nesta nova rodada):' : 'Itens aceitos com ressalva (ajustar antes da publicação):', ress.join('\n'));
+      if (acc || na) t.push('', 'Demais itens avaliados: ' + [acc ? acc + ' aceito(s)' : '', na ? na + ' N/A' : ''].filter(Boolean).join(', ') + '.');
+      t.push('', dec === 'devolvido' ? 'Corrija os itens indicados e envie uma nova rodada ao CoE.' : dec === 'aprovado_ressalva' ? 'Processo aprovado. Ajuste os itens com ressalva antes da publicação.' : 'Processo aprovado pelo CoE e liberado para publicação.');
+      return t.join('\n');
+    }
 
     function bannerHtml(t) {
       var op = ev.coe_opinion;
@@ -473,15 +540,19 @@
       } else if (i.just) {
         out += '<div class="just ok"><b>Justificativa do analista:</b> <span style="white-space:pre-wrap">' + h(i.just) + '</span></div>';
       }
+      var pa = ev.anterior ? prevDe(i) : null;
+      if (pa) out += '<div class="prev-box"><b class="small">Apontado na rodada ' + ev.anterior.round + '</b> ' + decPill(pa.coe.decisao) +
+        (pa.coe.instrucao ? '<div class="small" style="white-space:pre-wrap">' + h(pa.coe.instrucao) + '</div>' : '') + '</div>';
       if (revisando && revisavel(i)) {
         var r = rev[idx] || {};
-        out += '<div class="coe-box"><div class="row" style="gap:8px;align-items:center"><b class="small">Decisão do CoE</b>' +
-          '<select data-rdec="' + idx + '" aria-label="Decisão do CoE"><option value="">' + (i.just ? 'Escolha…' : 'Sem decisão') + '</option>' +
-          Object.keys(DEC_ITEM).map(function (k) { return '<option value="' + k + '"' + (r.decisao === k ? ' selected' : '') + '>' + DEC_ITEM[k] + '</option>'; }).join('') + '</select></div>' +
+        out += '<div class="coe-box"><b class="small">Decisão do CoE' + (i.just ? ' <span class="muted">(obrigatória: item justificado)</span>' : '') + '</b>' +
+          '<div class="decbtns" role="group" aria-label="Decisão do CoE para ' + h(i.id) + '">' + DEC_ORDEM.map(function (k) {
+            return '<button type="button" class="dec dec-' + k + (r.decisao === k ? ' on' : '') + '" data-rdec="' + idx + '" data-v="' + k + '" aria-pressed="' + (r.decisao === k) + '"><span aria-hidden="true">' + DEC_ICO[k] + '</span>' + DEC_ITEM[k] + '</button>';
+          }).join('') + '</div>' +
           '<textarea rows="2" data-rins="' + idx + '" placeholder="Instrução para o analista (ex.: ajustar antes de publicar, ou desconsiderar o apontamento)">' + h(r.instrucao || '') + '</textarea>' +
           '<label class="check tiny"><input type="checkbox" data-rori="' + idx + '"' + (r.orientar ? ' checked' : '') + '>Guardar esta instrução como orientação para a IA nas próximas análises (regra ' + h(i.rule) + ')</label></div>';
       } else if (i.coe) {
-        out += '<div class="coe-box ro"><b class="small">' + h(DEC_ITEM[i.coe.decisao] || i.coe.decisao) + '</b>' + (i.coe.instrucao ? ' · <span style="white-space:pre-wrap">' + h(i.coe.instrucao) + '</span>' : '') +
+        out += '<div class="coe-box ro">' + decPill(i.coe.decisao, decLabel(i.coe, i)) + (i.coe.instrucao ? ' <span style="white-space:pre-wrap">' + h(i.coe.instrucao) + '</span>' : '') +
           '<div class="tiny muted">' + h(i.coe.por) + ' · ' + h(dataBR(i.coe.em, true)) + '</div></div>';
       }
       return out;
@@ -497,7 +568,10 @@
         return '<section class="card" id="revisao"><h2>Decisão do CoE</h2><div class="row" style="gap:18px">' +
           [['aprovado', 'Aprovado'], ['aprovado_ressalva', 'Aprovado com ressalva'], ['devolvido', 'Devolvido para correção']].map(function (x) {
             return '<label class="check"><input type="radio" name="rdg" value="' + x[0] + '"' + (revGeral.decisao === x[0] ? ' checked' : '') + '>' + x[1] + '</label>'; }).join('') + '</div>' +
-          '<label class="f">Parecer do CoE (obrigatório para ressalva ou devolução)<textarea id="rpar" rows="4" placeholder="Resumo da avaliação e instruções gerais para o analista">' + h(revGeral.parecer) + '</textarea></label>' +
+          '<div id="rcont">' + contadorHtml() + '</div>' +
+          '<div class="row between" style="align-items:flex-end"><label class="f" for="rpar" style="margin:0">Parecer do CoE (obrigatório para ressalva ou devolução)</label>' +
+          '<button type="button" class="btn sm" id="rsug">Gerar sugestão de parecer</button></div>' +
+          '<textarea id="rpar" rows="8" placeholder="Resumo da avaliação e instruções gerais para o analista. Use &quot;Gerar sugestão de parecer&quot; para compilar as decisões de cada item.">' + h(revGeral.parecer) + '</textarea>' +
           '<div class="err-msg" id="rerr"></div><div class="row end"><button class="btn primary" id="rsalvar">Registrar decisão</button></div></section>';
       }
       return '';
@@ -520,10 +594,10 @@
       $app.innerHTML = layout(revisando ? '#/admin/avaliacoes' : '#/historico',
         '<div class="head"><div><a class="back" href="' + (revisando ? '#/admin/avaliacoes">‹ Avaliações recebidas' : '#/historico">‹ Minhas autoavaliações') + '</a><h1>' + h(ev.process_name) + ' · rodada ' + ev.round + '</h1>' +
         '<p class="lead">' + [ev.app_code ? 'App ' + h(ev.app_code) : '', ev.flow_version ? 'versão ' + h(ev.flow_version) : '', h(dataBR(ev.created_at, true)),
-          ev.manual_version ? 'Manual v' + h(ev.manual_version) : 'sem manual', ev.with_ai ? 'com IA (' + h(ev.model) + ')' : 'sem IA', dono ? '' : 'analista: ' + h(ev.analista)].filter(Boolean).join(' · ') + '</p><div>' + stCoe(ev.coe_status) + '</div></div>' +
+          ev.manual_version ? 'Manual v' + h(ev.manual_version) : 'sem manual', ev.with_ai ? 'com IA (' + h(ev.model) + ')' : 'sem IA', dono ? '' : 'analista: ' + h(ev.analista)].filter(Boolean).join(' · ') + '</p><div>' + stCoe(ev.coe_status) + (ev.anterior ? ' ' + st('retorno', 'Retorno de devolução') : '') + '</div></div>' +
         '<div class="row">' + (admin ? '<button class="btn danger" id="excluir">Excluir</button>' : '') + '<button class="btn" id="xls">Exportar Excel</button><button class="btn" id="pdf">Exportar PDF</button>' + (dono ? '<a class="btn primary" href="#/nova">Nova rodada</a>' : '') + '</div></div>' +
         (ev.coe_status !== 'rascunho' ? progressoCoe(ev) : '') +
-        bannerHtml(t) +
+        bannerHtml(t) + anteriorHtml() +
         (ev.summary && ev.summary.avisoIA ? '<div class="note warn">' + h(ev.summary.avisoIA) + '</div>' : '') +
         '<div class="grid g4"><div class="tile"><span>Bloqueantes abertos</span><b style="color:var(--bad)">' + t.bAbertos + '</b><small>de ' + nB + ' avaliados</small></div>' +
         '<div class="tile"><span>Para confirmar</span><b style="color:var(--warn)">' + t.confirmar + '</b><small>print ou checklist</small></div>' +
@@ -557,10 +631,23 @@
         ta.addEventListener('input', function () { ev.items[n].just = ta.value; atualizarEnvio(n); });
         ta.addEventListener('change', function () { salvar().catch(function (e) { toast(e.message); }); });
       });
-      $$('[data-rdec]').forEach(function (sel) { sel.addEventListener('change', function () { var n = +sel.getAttribute('data-rdec'); (rev[n] = rev[n] || { regras: ev.items[n].rule }).decisao = sel.value; sugerirGeral(); }); });
+      $$('[data-rdec]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var n = +b.getAttribute('data-rdec'), v = b.getAttribute('data-v');
+          var r = (rev[n] = rev[n] || { regras: ev.items[n].rule });
+          r.decisao = r.decisao === v ? '' : v; // clicar de novo desmarca
+          $$('[data-rdec="' + n + '"]').forEach(function (x) { var ativo = x.getAttribute('data-v') === r.decisao; x.classList.toggle('on', ativo); x.setAttribute('aria-pressed', ativo); });
+          sugerirGeral();
+        });
+      });
+      on('#rsug', 'click', function () {
+        var ta = $('#rpar');
+        if (ta.value.trim() && !confirm('Substituir o texto atual do parecer pela sugestão?')) return;
+        ta.value = ultimaSug = gerarParecer(); revGeral.parecer = ta.value; ta.focus();
+      });
       $$('[data-rins]').forEach(function (ta) { ta.addEventListener('input', function () { var n = +ta.getAttribute('data-rins'); (rev[n] = rev[n] || { regras: ev.items[n].rule }).instrucao = ta.value; }); });
       $$('[data-rori]').forEach(function (cb) { cb.addEventListener('change', function () { var n = +cb.getAttribute('data-rori'); (rev[n] = rev[n] || { regras: ev.items[n].rule }).orientar = cb.checked; }); });
-      $$('[name="rdg"]').forEach(function (r) { r.addEventListener('change', function () { revGeral.decisao = r.value; }); });
+      $$('[name="rdg"]').forEach(function (r) { r.addEventListener('change', function () { revGeral.decisao = r.value; atualizarSugestao(); }); });
       on('#rpar', 'input', function (e) { revGeral.parecer = e.target.value; });
       on('#rsalvar', 'click', registrarDecisao);
       on('#enviar', 'click', enviar);
@@ -577,11 +664,14 @@
       if (m) m.textContent = falta.length ? 'Falta justificar: ' + falta.map(function (i) { return i.id; }).join(', ') + '.' : 'Todas as pendências estão justificadas. O CoE vai avaliar cada justificativa.';
     }
     function sugerirGeral() {
-      var ds = Object.keys(rev).map(function (k) { return rev[k].decisao; });
-      var sug = ds.indexOf('nao_aceito') >= 0 ? 'devolvido' : ds.indexOf('ressalva') >= 0 ? 'aprovado_ressalva' : '';
-      if (!sug) return;
-      revGeral.decisao = sug;
-      $$('[name="rdg"]').forEach(function (r) { r.checked = r.value === sug; });
+      var c = contagem(), box = $('#rcont');
+      if (box) box.innerHTML = contadorHtml();
+      var sug = c.nao || c.atingido ? 'devolvido' : c.ress ? 'aprovado_ressalva' : '';
+      if (sug) {
+        revGeral.decisao = sug;
+        $$('[name="rdg"]').forEach(function (r) { r.checked = r.value === sug; });
+      }
+      atualizarSugestao();
     }
     async function salvar() { await api('/api/evaluations/' + ev.id, { method: 'PATCH', body: { items: ev.items } }); }
     async function mudar(i, status) {
@@ -615,6 +705,9 @@
     }
     async function registrarDecisao() {
       var err = $('#rerr'); err.textContent = '';
+      var c = contagem();
+      if (c.atingido && revGeral.decisao && revGeral.decisao !== 'devolvido' &&
+        !confirm('O limite de ressalvas foi atingido (' + c.pct + '%, limite ' + c.lim + '%). O app sugere "Devolvido para correção". Registrar mesmo assim como "' + COE_ST[revGeral.decisao] + '"?')) return;
       var itens = {}, orient = [];
       Object.keys(rev).forEach(function (k) {
         var r = rev[k];
@@ -641,7 +734,7 @@
       await mensagem('O CoE concluiu a análise: ' + COE_ST[op.decisao],
         '<p><b>' + h(ev.process_name) + ' · rodada ' + ev.round + '</b><br><span class="small muted">' + h(op.por) + ' em ' + h(dataBR(op.em, true)) + '</span></p>' +
         (op.parecer ? '<p style="white-space:pre-wrap">' + h(op.parecer) + '</p>' : '') +
-        (instr.length ? '<p class="small"><b>' + instr.length + ' item(ns) com instrução do CoE</b>: ' + instr.map(function (i) { return h(i.id) + ' (' + h(DEC_ITEM[i.coe.decisao]) + ')'; }).join(', ') + '. Veja os detalhes na tabela.</p>' : '') +
+        (instr.length ? '<p class="small"><b>' + instr.length + ' item(ns) com instrução do CoE</b>: ' + instr.map(function (i) { return h(i.id) + ' (' + h(decLabel(i.coe, i)) + ')'; }).join(', ') + '. Veja os detalhes na tabela.</p>' : '') +
         (op.decisao === 'devolvido' ? '<p>Corrija os pontos indicados e envie uma nova rodada.</p>' : op.decisao === 'aprovado_ressalva' ? '<p>Atenda às ressalvas antes da publicação.</p>' : '<p>Processo liberado pelo CoE.</p>'), cls);
     }
   }
@@ -809,7 +902,7 @@
       (lista.length ? lista.map(function (e) {
         var grupo = porProc[e.process_name.toLowerCase() + '|' + (e.app_code || '')];
         var atual = grupo[0].id === e.id;
-        return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + '</td><td>' + e.round + '</td><td>' + h(dataBR(e.created_at, true)) + '</td><td>' + (e.manual_version ? 'v' + h(e.manual_version) : '-') + '</td>' +
+        return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + tagRetorno(e) + '</td><td>' + e.round + '</td><td>' + h(dataBR(e.created_at, true)) + '</td><td>' + (e.manual_version ? 'v' + h(e.manual_version) : '-') + '</td>' +
           '<td style="font-weight:700;color:' + (e.b_open ? 'var(--bad)' : 'var(--ok)') + '">' + e.b_open + '</td><td>' + e.r_open + '</td><td>' +
           (e.coe_status && e.coe_status !== 'rascunho' ? stCoe(e.coe_status) : atual ? (e.ready ? st('pronto', 'Pronto para o CoE') : st('corrigir', 'Corrigir ou justificar')) : st('substituida', 'Substituída')) + '</td><td class="acoes-rel"><a href="#/resultado/' + e.id + '"><b>Abrir</b></a>' +
           (S.me.user.role === 'admin' ? '<br>' + botoesExcluir(e.id, e.process_name, e.app_code) : '') + '</td></tr>';
@@ -973,7 +1066,7 @@
     function opt(v, t, sel) { return '<option value="' + h(v) + '"' + (v === sel ? ' selected' : '') + '>' + h(t) + '</option>'; }
     $app.innerHTML = layout('#/admin/relatorios',
       '<div class="head"><div><h1>Relatórios</h1><p class="lead">Acompanhe as autoavaliações da equipe e exporte com a identidade configurada abaixo.</p></div>' +
-      '<div class="row"><button class="btn" id="rx">Exportar Excel</button><button class="btn primary" id="rp">Exportar PDF</button></div></div>' +
+      '<div class="row"><button class="btn" id="rimp" style="display:none">Imprimir / Salvar em PDF</button><button class="btn" id="rx">Exportar Excel</button><button class="btn primary" id="rp">Exportar PDF</button></div></div>' +
       '<div class="tabs big" role="tablist" id="rmodo"><button type="button" role="tab" data-modo="tabelas">Relatórios</button><button type="button" role="tab" data-modo="painel">Painel gráfico</button></div>' +
       '<section class="card"><div class="card-head"><h2>Filtros</h2><button class="link" id="limpar">Limpar filtros</button></div><div class="grid g4">' +
       '<label class="f" id="ftipo">Tipo de relatório<select id="tipo">' + Object.keys(TIPOS).map(function (k) { return opt(k, TIPOS[k].nome, f.tipo); }).join('') + '</select></label>' +
@@ -1095,7 +1188,9 @@
       function pt(a, rr) { return (cx + rr * Math.cos(a)).toFixed(2) + ',' + (cy + rr * Math.sin(a)).toFixed(2); }
       var fatias = vis.map(function (l) {
         var i = linhas.indexOf(l), a2 = ang + l.valor / tot * Math.PI * 2, grande = a2 - ang > Math.PI ? 1 : 0, d;
-        if (vis.length === 1) d = 'M' + pt(-Math.PI / 2, R) + 'A' + R + ',' + R + ' 0 1 1 ' + pt(Math.PI * 1.5 - 0.001, R) + 'Z' + (rosca ? 'M' + pt(-Math.PI / 2, r0) + 'A' + r0 + ',' + r0 + ' 0 1 0 ' + pt(Math.PI * 1.5 - 0.001, r0) + 'Z' : '');
+        // fatia unica: circulo inteiro em duas meias-voltas (um arco so de 360 graus nao desenha)
+        if (vis.length === 1) d = 'M' + pt(-Math.PI / 2, R) + 'A' + R + ',' + R + ' 0 1 1 ' + pt(Math.PI / 2, R) + 'A' + R + ',' + R + ' 0 1 1 ' + pt(-Math.PI / 2, R) + 'Z' +
+          (rosca ? 'M' + pt(-Math.PI / 2, r0) + 'A' + r0 + ',' + r0 + ' 0 1 0 ' + pt(Math.PI / 2, r0) + 'A' + r0 + ',' + r0 + ' 0 1 0 ' + pt(-Math.PI / 2, r0) + 'Z' : '');
         else d = 'M' + pt(ang, R) + 'A' + R + ',' + R + ' 0 ' + grande + ' 1 ' + pt(a2, R) + (rosca ? 'L' + pt(a2, r0) + 'A' + r0 + ',' + r0 + ' 0 ' + grande + ' 0 ' + pt(ang, r0) : 'L' + cx + ',' + cy) + 'Z';
         ang = a2;
         return '<path' + marca(l, id, i) + ' d="' + d + '" fill="' + l.cor + '" fill-rule="evenodd" stroke="#fff" stroke-width="2"/>';
@@ -1133,12 +1228,49 @@
     function grafico(id, titulo, sub, forma, nota) {
       defs[id] = { forma: forma };
       var atual = formaDe[id] || forma;
-      return '<section class="card chart"><div class="row between" style="align-items:flex-start"><div><h2>' + h(titulo) + '</h2><p class="small muted" style="margin:4px 0 0">' + h(sub) + '</p></div>' +
-        '<label class="f" style="flex-direction:row;align-items:center;gap:6px"><span class="sr">Tipo de gráfico</span><select data-forma="' + id + '" aria-label="Tipo de gráfico de ' + h(titulo) + '">' +
-        FORMAS.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === atual ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></label></div>' +
+      return '<section class="card chart" data-chart="' + id + '"><div class="row between" style="align-items:flex-start"><div><h2>' + h(titulo) + '</h2><p class="small muted" style="margin:4px 0 0">' + h(sub) + '</p></div>' +
+        '<div class="row no-print" style="gap:6px"><label class="f" style="flex-direction:row;align-items:center;gap:6px"><span class="sr">Tipo de gráfico</span><select data-forma="' + id + '" aria-label="Tipo de gráfico de ' + h(titulo) + '">' +
+        FORMAS.map(function (x) { return '<option value="' + x[0] + '"' + (x[0] === atual ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select></label>' + botaoImprimir(id, titulo) + '</div></div>' +
         '<div class="gbody" id="gb-' + id + '">' + corpoGrafico(id) + '</div>' + (nota ? '<p class="tiny muted" style="margin:0">' + h(nota) + '</p>' : '') + '</section>';
     }
     var series = {}, desenhadas = {};
+    function botaoImprimir(id, titulo) { return '<button type="button" class="btn sm" data-imprimir="' + id + '" title="Imprimir ou salvar em PDF só este gráfico" aria-label="Imprimir o gráfico ' + h(titulo) + '">Imprimir</button>'; }
+    // Desempenho por analista: barra 100% empilhada com o resultado de cada envio ao CoE
+    var SEG_DESEMP = [['aprovado', 'Aprovado', COR_COE.aprovado], ['aprovado_ressalva', 'Aprovado com ressalva', COR_COE.aprovado_ressalva], ['devolvido', 'Devolvido', COR_COE.devolvido], ['aguardando', 'Aguardando CoE', COR_COE.enviado]];
+    function grDesempenho(ls, idAnalista) {
+      var flat = desenhadas.desempenho = [];
+      if (!ls.length) return '<p class="muted small">Nenhum envio ao CoE no período.</p>';
+      return '<ul class="glegend inline">' + SEG_DESEMP.map(function (x) { return '<li><i style="background:' + x[2] + '"></i><span>' + h(x[1]) + '</span></li>'; }).join('') + '</ul>' +
+        '<div class="sbars"><div class="sb sb-head"><span>Analista</span><span>Resultado dos envios</span><span>% devolvido</span><span>Aprov. 1º envio</span></div>' + ls.map(function (d) {
+          return '<div class="sb"><span class="hb-l" title="' + h(d.analista) + '"><b>' + h(d.analista) + '</b><small>' + d.envios + ' envio(s)</small></span><span class="sb-t">' +
+            SEG_DESEMP.map(function (x) {
+              var v = d[x[0]]; if (!v) return '';
+              var pc = Math.round(v / d.envios * 100);
+              var l = { rotulo: d.analista, valor: v, tip: [d.analista + ' · ' + x[1], v + ' de ' + d.envios + ' envio(s) · ' + pc + '%', idAnalista[d.analista] ? 'Clique para filtrar o painel' : ''],
+                filtro: idAnalista[d.analista] ? { analista: idAnalista[d.analista], tipo: 'painel' } : null };
+              flat.push(l);
+              return '<i' + marca(l, 'desempenho', flat.length - 1, ' sbs') + ' style="width:' + (v / d.envios * 100) + '%;background:' + x[2] + '">' + (pc >= 10 ? pc + '%' : '') + '</i>';
+            }).join('') + '</span><span class="sb-v" style="color:' + (d.pctDevolvido >= 50 ? 'var(--bad)' : d.pctDevolvido >= 25 ? 'var(--warn)' : 'var(--ok)') + '">' + d.pctDevolvido + '%</span>' +
+            '<span class="sb-v">' + (d.pct1 == null ? '–' : d.pct1 + '%<small>' + d.aprov1 + ' de ' + d.proc1 + '</small>') + '</span></div>';
+        }).join('') + '</div>';
+    }
+    function imprimirPainel(id) {
+      var cab = document.createElement('div'); cab.className = 'print-head';
+      var alvo = id ? $('[data-chart="' + id + '"]') : null;
+      cab.innerHTML = '<img src="/coe-icone.svg" alt=""><div><b>' + h(rep.title) + ' – ' + (alvo ? h(alvo.querySelector('h2').textContent) : 'Painel gráfico') + '</b>' +
+        '<span>' + h(rep.subtitle) + '</span>' + metaFiltros().map(function (l) { return '<span>' + h(l) + '</span>'; }).join('') + '</div>';
+      $('#tiles').parentNode.insertBefore(cab, $('#tiles'));
+      document.body.classList.add('imprimindo');
+      if (alvo) { document.body.classList.add('imprimir-um'); alvo.classList.add('alvo'); }
+      function fim() {
+        cab.remove(); document.body.classList.remove('imprimindo', 'imprimir-um'); if (alvo) alvo.classList.remove('alvo');
+        window.removeEventListener('afterprint', fim);
+      }
+      window.addEventListener('afterprint', fim);
+      var img = cab.querySelector('img');
+      function ir() { setTimeout(function () { window.print(); }, 60); }
+      if (img.complete) ir(); else { img.onload = ir; img.onerror = ir; }
+    }
     function ligarMarcas(raiz) {
       var tip = $('#ctip');
       $$('#' + raiz.id + ' .gm, ' + (raiz.id === 'painel' ? '#painel .gm' : '')).forEach(function (el) {
@@ -1181,6 +1313,11 @@
         areas: pn.areas.map(function (r) { return { rotulo: r.rotulo, valor: r.valor, tip: [r.rotulo, r.valor + ' processo(s)', 'Clique para filtrar'], filtro: { area: r.rotulo, tipo: 'painel' } }; })
       };
       $('#painel').innerHTML =
+        '<section class="card chart" data-chart="desempenho"><div class="row between" style="align-items:flex-start"><div><h2>Desempenho por analista</h2>' +
+        '<p class="small muted" style="margin:4px 0 0">Envios ao CoE no período e o resultado de cada envio. Quem tem mais devoluções aparece primeiro.</p></div>' +
+        '<div class="row no-print">' + botaoImprimir('desempenho', 'Desempenho por analista') + '</div></div>' +
+        '<div class="gbody">' + grDesempenho(pn.desempenho || [], idAnalista) + '</div>' +
+        '<p class="tiny muted" style="margin:0">% devolvido = envios devolvidos ÷ envios já decididos pelo CoE. Aprov. 1º envio = processos aprovados (com ou sem ressalva) já no primeiro envio do analista ao CoE.</p></section>' +
         grafico('regras', 'Itens mais reprovados', 'Regras com bloqueante aberto ou justificativa não aceita, somando todas as rodadas', 'barras', 'Passe o mouse para ver em quais processos.') +
         '<div class="grid g2">' +
         grafico('rodadas', 'Rodadas por processo', 'Quantas rodadas cada processo precisou', 'colunas') +
@@ -1189,6 +1326,7 @@
         grafico('avaliadores', 'Processos por avaliador do CoE', 'Processos com decisão registrada', 'barras') +
         '</div>' + grafico('areas', 'Processos por área responsável', 'Processos distintos por área informada na autoavaliação', 'pizza');
       ligarMarcas($('#painel'));
+      $$('[data-imprimir]').forEach(function (b) { b.addEventListener('click', function () { imprimirPainel(b.getAttribute('data-imprimir')); }); });
       $$('[data-forma]').forEach(function (sel) {
         sel.addEventListener('change', function () {
           var id = sel.getAttribute('data-forma');
@@ -1213,8 +1351,11 @@
     }
     // No painel, cada grafico vira uma tabela na exportacao
     function secoesPainel() {
-      var nomes = { regras: 'Itens mais reprovados', rodadas: 'Rodadas por processo', situacao: 'Situação no CoE', analistas: 'Processos por analista', avaliadores: 'Processos por avaliador', areas: 'Processos por área' };
+      var nomes = { desempenho: 'Desempenho por analista', regras: 'Itens mais reprovados', rodadas: 'Rodadas por processo', situacao: 'Situação no CoE', analistas: 'Processos por analista', avaliadores: 'Processos por avaliador', areas: 'Processos por área' };
       return Object.keys(nomes).map(function (k) {
+        if (k === 'desempenho') return { titulo: nomes[k], nome: 'Desempenho analistas', colunas: ['Analista', 'Envios', 'Aprovado', 'Aprovado c/ ressalva', 'Devolvido', 'Aguardando', '% devolvido', 'Aprov. 1º envio'],
+          linhas: (dados.painel.desempenho || []).map(function (d) { return [d.analista, d.envios, d.aprovado, d.aprovado_ressalva, d.devolvido, d.aguardando, d.pctDevolvido + '%', d.pct1 == null ? '-' : d.pct1 + '% (' + d.aprov1 + ' de ' + d.proc1 + ')']; }),
+          larguras: [30, 10, 12, 18, 12, 12, 13, 18] };
         if (k === 'regras') return { titulo: nomes[k], nome: nomes[k], colunas: ['Regra', 'Item', 'Reprovações', 'Processos'], linhas: dados.painel.regras.map(function (r) { return [r.regra, r.item, r.ocorrencias, r.lista]; }), larguras: [12, 60, 14, 50] };
         return { titulo: nomes[k], nome: nomes[k], colunas: [k === 'rodadas' ? 'Processo' : k === 'situacao' ? 'Situação' : k === 'areas' ? 'Área' : 'Nome', 'Quantidade'],
           linhas: series[k].map(function (l) { return [l.rotulo, l.valor]; }), larguras: [50, 14] };
@@ -1222,10 +1363,12 @@
     }
     function tabela() { var T = TIPOS[dados.tipo]; return { colunas: T.cols.map(function (c) { return c[1]; }), linhas: dados.linhas.map(function (l) { return T.cols.map(function (c) { return celula(c[0], l[c[0]]); }); }) }; }
     on('#aplicar', 'click', function () { carregar().catch(function (e) { toast(e.message); }); });
+    on('#rimp', 'click', function () { if (dados.tipo === 'painel') imprimirPainel(); });
     function marcarModo() {
       $$('[data-modo]').forEach(function (b) { var on_ = b.getAttribute('data-modo') === modo; b.classList.toggle('on', on_); b.setAttribute('aria-selected', on_); });
       $('#ftipo').style.display = modo === 'painel' ? 'none' : '';
       $('#ultima').parentNode.style.display = modo === 'painel' ? 'none' : '';
+      $('#rimp').style.display = modo === 'painel' ? '' : 'none';
     }
     $$('[data-modo]').forEach(function (b) { b.addEventListener('click', function () { modo = b.getAttribute('data-modo'); marcarModo(); carregar().catch(function (e) { toast(e.message); }); }); });
     marcarModo();
@@ -1299,7 +1442,7 @@
           return '<button type="button" role="tab" data-aba="' + x[0] + '" class="' + (aba === x[0] ? 'on' : '') + '" aria-selected="' + (aba === x[0]) + '">' + h(x[1]) + '</button>'; }).join('') + '</div></div>' +
         '<div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th>Processo</th><th>Analista</th><th>Rodada</th><th>Enviado em</th><th>Bloqueantes abertos</th><th>Justificados</th><th>Situação</th><th><span class="sr">Ações</span></th></tr></thead><tbody>' +
         (lista.length ? lista.map(function (e) {
-          return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + '</td><td>' + h(e.analista) + '</td><td>' + e.round + '</td>' +
+          return '<tr><td><b>' + h(e.process_name) + '</b>' + (e.app_code ? ' <span class="muted tiny">app ' + h(e.app_code) + '</span>' : '') + tagRetorno(e) + '</td><td>' + h(e.analista) + '</td><td>' + e.round + '</td>' +
             '<td>' + h(dataBR(e.submitted_at, true)) + '</td><td style="font-weight:700;color:' + (e.b_open ? 'var(--bad)' : 'var(--ok)') + '">' + e.b_open + '</td><td>' + e.justificados + '</td>' +
             '<td>' + stCoe(e.coe_status) + (e.revisor && !aguardandoCoe(e.coe_status) ? '<div class="tiny muted">' + h(e.revisor) + ' · ' + h(dataBR(e.reviewed_at, true)) + '</div>' : '') + '</td>' +
             '<td><a href="#/resultado/' + e.id + '"><b>' + (aguardandoCoe(e.coe_status) ? 'Avaliar' : 'Abrir') + '</b></a></td></tr>';
@@ -1371,6 +1514,8 @@
       '<fieldset><legend>Limites de uso</legend><label class="check"><input type="checkbox" id="lim"' + (cfg.limits_enabled ? ' checked' : '') + '>Aplicar limite diário <span class="muted small">(desmarque ao usar um modelo pago sem restrição)</span></label>' +
       '<div class="grid g2"><label class="f">Por analista por dia<input type="number" min="0" id="lu" value="' + cfg.limit_user + '"></label><label class="f">Total da equipe por dia<input type="number" min="0" id="lt" value="' + cfg.limit_total + '"></label></div>' +
       '<div class="note warn">Com modelo gratuito do OpenRouter, o teto é de 50 análises por dia sem créditos (1.000 com US$ 10 em créditos), e falhas também contam. O limite do provedor reinicia às 21h (Brasília).</div></fieldset>' +
+      '<fieldset><legend>Regras da decisão do CoE</legend><label class="f" style="max-width:340px">Limite de itens aceitos com ressalva (%)<input type="number" min="0" max="100" id="lres" value="' + (cfg.limite_ressalva == null ? 30 : cfg.limite_ressalva) + '">' +
+      '<small>Calculado sobre os itens com decisão do CoE (N/A não conta). Ao atingir o limite, o app sugere "Devolvido para correção" e mostra o percentual. 0 desativa.</small></label></fieldset>' +
       '<div class="row end"><button class="btn primary" id="salvar">Salvar configuração</button></div>' +
       '<div><b class="small">Histórico de alterações</b><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Data</th><th>Quem</th><th>Alteração</th></tr></thead><tbody>' +
       (log.length ? log.map(function (l) { return '<tr><td style="white-space:nowrap">' + h(dataBR(l.at, true)) + '</td><td>' + h(l.name || '') + '</td><td>' + h(l.change) + '</td></tr>'; }).join('') : '<tr><td colspan="3" class="muted">Sem alterações.</td></tr>') +
@@ -1400,7 +1545,7 @@
     on('#salvar', 'click', async function () {
       try {
         await api('/api/config', { method: 'PUT', body: { ai_provider: $('#prov').value, ai_url: $('#url').value, ai_model: $('#mod').value, ai_fallback: $('#fb').value,
-          ai_mask: $('#mask').checked, ai_bloqueia: $('#iab').checked, limits_enabled: $('#lim').checked, limit_user: $('#lu').value, limit_total: $('#lt').value } });
+          ai_mask: $('#mask').checked, ai_bloqueia: $('#iab').checked, limits_enabled: $('#lim').checked, limit_user: $('#lu').value, limit_total: $('#lt').value, limite_ressalva: $('#lres').value } });
         toast('Configuração salva.'); S.me = null; await carregarMe(); viewUso();
       } catch (e) { toast(e.message); }
     });
