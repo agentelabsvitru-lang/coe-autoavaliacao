@@ -255,3 +255,80 @@ dialog.msg h2 { margin: 0 0 10px; font-size: 19px; }
 .esp-erro { display: block; color: #5c1a1a; background: var(--bad-bg); padding: 10px 12px; border-radius: 8px; font-size: 13px; }
 .esp-acoes:empty { display: none; }
 #offline { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90; background: var(--bad); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; font-weight: 600; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
+
+/* --- logo do CoE --- */
+.brand.brand-logo { flex-direction: column; align-items: flex-start; gap: 6px; padding: 0 4px; }
+.brand-logo img { width: 100%; max-width: 200px; height: auto; display: block; }
+.brand-logo small { font-size: 12px; color: #c9ced6; padding-left: 6px; letter-spacing: .02em; }
+.brand-ico { width: 48px; height: 48px; border-radius: 11px; flex: 0 0 auto; }
+
+/* --- decisao do CoE por item: botoes coloridos --- */
+:root { --dec-ok: #1E7A3C; --dec-ok-bg: #E6F4EA; --dec-warn: #E0A800; --dec-warn-ink: #5c3d00; --dec-warn-bg: #FFF4D6;
+  --dec-bad: #B42318; --dec-bad-bg: #FDE8E8; --dec-na: #1D5FB8; --dec-na-bg: #E5EEFB; }
+.decbtns { display: flex; flex-wrap: wrap; gap: 5px; }
+.dec { display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12.5px; font-weight: 600; padding: 5px 9px; border-radius: 8px; border: 1.5px solid; background: #fff; cursor: pointer; transition: background .12s, color .12s; }
+.dec span { font-weight: 700; width: 14px; text-align: center; }
+.dec:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.dec.dec-aceito { color: var(--dec-ok); border-color: var(--dec-ok); } .dec.dec-aceito:hover { background: var(--dec-ok-bg); }
+.dec.dec-ressalva { color: var(--dec-warn-ink); border-color: var(--dec-warn); } .dec.dec-ressalva:hover { background: var(--dec-warn-bg); }
+.dec.dec-nao_aceito { color: var(--dec-bad); border-color: var(--dec-bad); } .dec.dec-nao_aceito:hover { background: var(--dec-bad-bg); }
+.dec.dec-na { color: var(--dec-na); border-color: var(--dec-na); } .dec.dec-na:hover { background: var(--dec-na-bg); }
+.dec.on.dec-aceito { background: var(--dec-ok); color: #fff; }
+.dec.on.dec-ressalva { background: var(--dec-warn); color: #2b1d00; }
+.dec.on.dec-nao_aceito { background: var(--dec-bad); color: #fff; }
+.dec.on.dec-na { background: var(--dec-na); color: #fff; }
+.decpill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.decpill.dec-aceito { background: var(--dec-ok); color: #fff; }
+.decpill.dec-ressalva { background: var(--dec-warn); color: #2b1d00; }
+.decpill.dec-nao_aceito { background: var(--dec-bad); color: #fff; }
+.decpill.dec-na { background: var(--dec-na); color: #fff; }
+#rpar { width: 100%; font: inherit; font-size: 13px; line-height: 1.5; }
+
+/* --- retorno de devolucao --- */
+.st-retorno { background: #FDE8E8; color: #7f1414; border: 1px solid #f3c1c1; }
+.card.retorno { border-left: 4px solid var(--dec-bad); gap: 10px; }
+.prev-parecer { background: #f6f7f9; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; }
+.prev-lista { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.prev-lista li { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.prev-lista li > div { flex-basis: 100%; color: var(--ink2); }
+.prev-box { margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: #fff7f7; border: 1px solid #f3c1c1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.prev-box > div { flex-basis: 100%; color: var(--ink2); }
+
+/* --- desempenho por analista (barra empilhada) --- */
+.glegend.inline { flex-direction: row; flex-wrap: wrap; gap: 4px 14px; }
+.glegend.inline li { display: flex; gap: 6px; padding: 0; }
+.glegend.inline li:hover { background: none; }
+.sbars { display: flex; flex-direction: column; gap: 4px; }
+.sb { display: grid; grid-template-columns: minmax(130px, 24%) 1fr 84px 104px; gap: 12px; align-items: center; padding: 6px; border-radius: 6px; font-size: 13px; }
+.sb:not(.sb-head):hover { background: var(--line2); }
+.sb-head { font-size: 12px; color: var(--muted); font-weight: 600; padding-bottom: 2px; border-bottom: 1px solid var(--line); border-radius: 0; }
+.sb-head span:nth-child(n+3) { text-align: right; }
+.sb .hb-l b { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.sb .hb-l small { color: var(--muted); font-size: 12px; }
+.sb-t { display: flex; height: 24px; border-radius: 5px; overflow: hidden; background: var(--line2); }
+.sb-t i { display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 700; font-style: normal; min-width: 3px; border-right: 1px solid #fff; }
+.sb-t i:last-child { border-right: 0; }
+.sb-t i:hover { filter: brightness(1.12); }
+.sb-v { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sb-v small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+@media (max-width: 640px) { .sb { grid-template-columns: 1fr 64px 80px; } .sb .hb-l { grid-column: 1 / -1; } }
+
+/* --- impressao do painel (Imprimir / Salvar em PDF) --- */
+.print-head { display: none; }
+@media print {
+  @page { size: A4 landscape; margin: 12mm; }
+  body.imprimindo { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body.imprimindo .side, body.imprimindo #toast, body.imprimindo .ctip, body.imprimindo .no-print { display: none !important; }
+  body.imprimindo .wrap > *:not(#tiles):not(#painel):not(.print-head) { display: none !important; }
+  body.imprimindo .shell { display: block; }
+  body.imprimindo .main { padding: 0; }
+  body.imprimindo .wrap { max-width: none; gap: 12px; }
+  body.imprimindo .print-head { display: flex; gap: 14px; align-items: center; padding-bottom: 10px; border-bottom: 3px solid var(--accent); margin-bottom: 4px; }
+  body.imprimindo .print-head img { width: 44px; height: 44px; border-radius: 9px; }
+  body.imprimindo .print-head b { display: block; font-size: 17px; }
+  body.imprimindo .print-head span { display: block; font-size: 11px; color: var(--muted); }
+  body.imprimindo .card { box-shadow: none; break-inside: avoid; }
+  body.imprimindo .grid.g2 { grid-template-columns: 1fr 1fr; }
+  body.imprimir-um #tiles, body.imprimir-um #painel .card.chart:not(.alvo) { display: none !important; }
+  body.imprimir-um #painel .grid.g2 { display: block; }
+}
