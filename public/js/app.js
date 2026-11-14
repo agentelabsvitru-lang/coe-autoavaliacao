@@ -393,13 +393,13 @@
       w.ok(p1, 'Arquivos lidos: ' + [resumo.xls, resumo.diagram].filter(Boolean).join(' · '));
       var p2 = w.passo('Buscando padrões e conferências no servidor', 20); pAtual = p2;
       var dados = await Promise.all([api('/api/checks'), api('/api/manual'), api('/api/orientacoes')]);
-      var auto = E.runChecks(P, dados[0].checks);
       var manual = dados[1].vigente;
       var rules = manual ? manual.rules : [];
-      w.ok(p2, E.CHECKS.length + ' conferências automáticas concluídas');
+      // conferencias seguem o manual vigente: regra retirada some e a severidade e a do manual
+      var auto = E.alignChecks(E.runChecks(P, dados[0].checks), rules);
+      w.ok(p2, auto.length + ' conferências automáticas concluídas');
       var resposta = null, modelo = '', avisoIA = '';
-      var autoRules = {}; auto.forEach(function (a) { autoRules[a.rule] = 1; });
-      var regrasIA = rules.filter(function (r) { return r.aval === 'ia' && !autoRules[r.code]; });
+      var regrasIA = E.iaRules(rules, auto);
       if (usarIA && regrasIA.length) {
         var p3 = w.passo('Analisando ' + regrasIA.length + ' regras com IA (costuma levar de 20 s a 2 min)', 90); pAtual = p3;
         try {
@@ -1014,25 +1014,27 @@
   /* ------------------------------ admin: conferencias ------------------------------ */
   async function viewConferencias() {
     var cfg = (await api('/api/checks')).checks || [];
+    var vig = (await api('/api/manual')).vigente;
+    var rm = {}; if (vig) vig.rules.forEach(function (r) { rm[r.code] = r; });
     var m = {}; cfg.forEach(function (c) { m[c.id] = c; });
     var lista = E.CHECKS.map(function (c) { var x = m[c.id] || {}; return Object.assign({}, c, { active: x.active !== false, severity: x.severity || c.sev, mode: x.mode || c.mode || 'bloqueia', params: Object.assign({}, c.params || {}, x.params || {}) }); });
     $app.innerHTML = layout('#/admin/conferencias',
-      '<div class="head"><div><h1>Conferências automáticas</h1><p class="lead">Verificações exatas, sem IA, que rodam no navegador do analista. O CoE pode ligar, desligar, mudar a severidade e definir se o apontamento bloqueia ou só avisa (útil para padrão ainda em validação). Uma conferência nova exige código: peça à equipe de Automação.</p></div></div>' +
+      '<div class="head"><div><h1>Conferências automáticas</h1><p class="lead">Verificações exatas, sem IA, que rodam no navegador do analista. Cada uma confere uma regra do manual vigente' + (vig ? ' (v' + h(vig.version) + ')' : '') + ': a severidade é a da regra no manual, e a conferência cuja regra saiu do manual não roda. O CoE pode ligar, desligar e definir se o apontamento bloqueia ou só avisa. Uma conferência nova exige código: peça à equipe de Automação.</p></div></div>' +
       '<section class="card flush"><div class="tbl-wrap"><table class="tbl" style="min-width:980px"><thead><tr><th>ID</th><th>O que verifica</th><th>Arquivo</th><th>Regra</th><th style="width:150px">Severidade</th><th style="width:150px">Efeito</th><th>Ativa</th></tr></thead><tbody>' +
       lista.map(function (c, i) {
         return '<tr><td><b>' + h(c.id) + '</b></td><td>' + h(c.desc) +
-          (c.id === 'AUTO-02' ? '<div class="fix tiny">Versão esperada: <input type="text" data-ver="' + i + '" value="' + h(c.params.versao || '3.1') + '" style="width:70px;padding:4px 6px"></div>' : '') +
+          (c.id === 'AUTO-02' ? '<div class="fix tiny">Versão mínima aceita: <input type="text" data-ver="' + i + '" value="' + h(c.params.versaoMinima || '3.2') + '" style="width:60px;padding:4px 6px"> · versão de referência: <input type="text" data-ref="' + i + '" value="' + h(c.params.referencia || '3.3') + '" style="width:60px;padding:4px 6px"></div>' : '') +
           (c.id === 'AUTO-01' ? '<div class="fix tiny">Trechos padrão liberados (um por linha; a linha do script que contém o trecho é ignorada):<textarea data-ign="' + i + '" rows="2" style="width:100%;margin-top:4px">' + h((c.params.ignorar || []).join('\n')) + '</textarea></div>' : '') + '</td>' +
-          '<td><span class="tag">' + h(c.files) + '</span></td><td><b>' + h(c.rule) + '</b></td>' +
-          '<td><select data-s="' + i + '" aria-label="Severidade"><option value="B"' + (c.severity === 'B' ? ' selected' : '') + '>B - Bloqueante</option><option value="R"' + (c.severity === 'R' ? ' selected' : '') + '>R - Recomendado</option></select></td>' +
+          '<td><span class="tag">' + h(c.files) + '</span></td><td><b>' + h(c.rule) + '</b>' + (vig && !rm[c.rule] ? '<div class="tiny" style="color:var(--bad)">Fora do manual vigente: não roda</div>' : '') + '</td>' +
+          '<td>' + (rm[c.rule] ? (rm[c.rule].sev === 'B' ? 'B - Bloqueante' : 'R - Recomendado') + '<div class="tiny muted">conforme o manual</div>' : '<span class="muted">' + (c.severity === 'B' ? 'B - Bloqueante' : 'R - Recomendado') + '</span>') + '</td>' +
           '<td><select data-m="' + i + '" aria-label="Efeito"><option value="bloqueia"' + (c.mode !== 'aviso' ? ' selected' : '') + '>Bloqueia</option><option value="aviso"' + (c.mode === 'aviso' ? ' selected' : '') + '>Só avisa</option></select></td>' +
           '<td><label class="check"><input type="checkbox" data-a="' + i + '"' + (c.active ? ' checked' : '') + '>Sim</label></td></tr>';
       }).join('') + '</tbody></table></div></section><div class="row end"><button class="btn primary" id="salvar">Salvar alterações</button></div>');
     bindLayout();
     on('#salvar', 'click', async function () {
       var out = lista.map(function (c, i) {
-        var o = { id: c.id, active: $('[data-a="' + i + '"]').checked, severity: $('[data-s="' + i + '"]').value, mode: $('[data-m="' + i + '"]').value };
-        var v = $('[data-ver="' + i + '"]'); if (v) o.params = { versao: v.value.trim() || '3.1' };
+        var o = { id: c.id, active: $('[data-a="' + i + '"]').checked, severity: rm[c.rule] ? rm[c.rule].sev : c.severity, mode: $('[data-m="' + i + '"]').value };
+        var v = $('[data-ver="' + i + '"]'); if (v) o.params = { versaoMinima: v.value.trim() || '3.2', referencia: ($('[data-ref="' + i + '"]').value || '').trim() || '3.3' };
         var g = $('[data-ign="' + i + '"]'); if (g) o.params = { ignorar: g.value.split('\n').map(function (x) { return x.trim(); }).filter(Boolean) };
         return o;
       });
@@ -1461,7 +1463,7 @@
       $app.innerHTML = layout('#/admin/orientacoes',
         '<div class="head"><div><h1>Orientações à IA</h1><p class="lead">Decisões do CoE que a IA recebe em toda análise, antes das regras. Use para corrigir interpretações erradas (ex.: uma exceção aceita, um dado que o export não traz). Também nascem da tela de avaliação, ao marcar "Guardar como orientação".</p></div>' +
         '<button class="btn" id="add">Adicionar orientação</button></div>' +
-        '<div class="note info">Em <b>Regras</b>, informe os códigos separados por vírgula (ex.: <b>S17</b> ou <b>1.3</b>, que vale para 1.3-1, 1.3-2…). Vazio vale para todas. A orientação só é enviada quando uma dessas regras está na análise.</div>' +
+        '<div class="note info">Em <b>Regras</b>, informe os códigos separados por vírgula (ex.: <b>S17</b> ou <b>N5, N6</b>). Vazio vale para todas. A orientação só é enviada quando uma dessas regras está na análise.</div>' +
         '<section class="card flush"><div class="tbl-wrap"><table class="tbl" style="min-width:900px"><thead><tr><th style="width:130px">Regras</th><th>Orientação</th><th style="width:200px">Origem</th><th style="width:80px">Ativa</th><th style="width:70px"><span class="sr">Excluir</span></th></tr></thead><tbody>' +
         (lista.length ? lista.map(function (o, i) {
           return '<tr><td><input type="text" data-or="' + i + '" value="' + h(o.regras) + '" placeholder="todas" style="width:110px"></td>' +

@@ -259,7 +259,7 @@
   }
 
   /* ----------------------------- conferencias ----------------------------- */
-  // CSS padrao (secao 3.5 do manual). Comparado sem espacos.
+  // CSS padrao (secao 3.4 do manual v1.5). Comparado sem espacos.
   var CSS_MARKERS = ['#containerRequest .page-title', 'table.form > tbody', 'grid-template-columns: repeat(2, minmax(0, 1fr))',
     'table.form .form-control[readonly]', '.customFormControllers', 'border-bottom: 3px solid #FFC629'];
   var HIST_COLS = { histRodada: 'Texto', histEtapa: 'Texto', histData: 'Texto', histExecutor: 'Texto', histCampo: 'Texto', histValor: 'Longo' };
@@ -305,22 +305,19 @@
         return falta.length ? res('aberto', falta.join(' | '), 'Incluir no topo: processo, atividade, versão, data, autor e resumo das alterações.')
           : res('conforme', 'Cabeçalho completo em todos os scripts.');
       } },
-    { id: 'AUTO-02', rule: 'S19', sev: 'B', files: '.js', desc: 'Componente de histórico na versão vigente',
-      params: { versao: '3.1' },
+    { id: 'AUTO-02', rule: 'S19', sev: 'B', files: '.js', desc: 'Componente de histórico na versão mínima aceita (3.2 ou superior)',
+      params: { versaoMinima: '3.2', referencia: '3.3' },
       run: function (P, prm) {
+        var ref = prm.referencia || '3.3', min = prm.versaoMinima || '3.2';
         var s = P.scripts.filter(function (x) { return historyBlock(x.text); })[0];
         if (!s) return res(P.scripts.length ? 'aberto' : 'na', P.scripts.length ? 'Componente de histórico não encontrado nos scripts.' : 'Nenhum script enviado.',
-          'Colar o script padrão da seção 3.7 em Javascript > Todas as atividades.');
-        var b = historyBlock(s.text);
-        var ver = (/Versao:\s*([\d.]+)/i.exec(b) || [])[1];
-        var diag = /function diagnostico\(\)[\s\S]{0,900}atributo/.test(b);
-        var v = prm.versao || '3.1';
-        if (ver === v && diag) return res('conforme', 'Versão ' + v + ' em ' + s.name + '.');
-        return res('aberto', (ver ? 'Cabeçalho indica versão ' + ver : 'Cabeçalho sem versão') +
-          (diag ? '' : '; função diagnostico() da versão anterior') + ' (' + s.name + ').',
-          'Substituir o bloco inteiro pelo script ' + v + ' do manual e reaplicar só nomesTabelas e botoes no CONFIG.');
+          'Colar o script padrão ' + ref + ' da seção 3.6 em Javascript > Todas as atividades.');
+        var ver = (/Versao:\s*([\d.]+)/i.exec(historyBlock(s.text)) || [])[1];
+        if (ver && cmpVersao(ver, min) >= 0) return res('conforme', 'Versão ' + ver + ' em ' + s.name + ' (mínima aceita: ' + min + ').');
+        return res('aberto', (ver ? 'Cabeçalho indica versão ' + ver + ', abaixo da mínima ' + min : 'Cabeçalho do componente sem versão') + ' (' + s.name + ').',
+          'Substituir o bloco inteiro pelo script ' + ref + ' da seção 3.6 e reaplicar só botoes, nomesTabelas e ignorar no CONFIG.');
       } },
-    { id: 'AUTO-03', rule: '3.7', sev: 'B', files: '.js + .xls', desc: 'CONFIG.botoes do histórico reconhece os botões do fluxo',
+    { id: 'AUTO-03', rule: 'S19', sev: 'B', files: '.js + .xls', desc: 'CONFIG.botoes do histórico reconhece os botões do fluxo',
       run: function (P) {
         var s = P.scripts.filter(function (x) { return historyBlock(x.text); })[0];
         if (!s || !P.xls) return res('na', !s ? 'Componente de histórico não encontrado.' : 'Export .xls não enviado.');
@@ -335,7 +332,7 @@
           'Incluir esses textos (minúsculos, sem acento) em CONFIG.botoes.')
           : res('conforme', 'Reconhece ' + Object.keys(labels).map(function (k) { return '"' + k + '"'; }).join(', ') + '.');
       } },
-    { id: 'AUTO-04', rule: 'F21', sev: 'B', files: '.xls', desc: 'Tabela Histórico: último elemento, colunas e tipos padrão',
+    { id: 'AUTO-04', rule: 'F20', sev: 'B', files: '.xls', desc: 'Tabela Histórico: último elemento, colunas e tipos padrão',
       run: function (P) {
         if (!P.xls) return res('na', 'Export .xls não enviado.');
         var f = P.xls.fields, prob = [];
@@ -355,10 +352,10 @@
           var falta = titles.filter(function (t) { return c.tasks.indexOf(t) < 0; });
           if (falta.length) prob.push(id + ' não habilitado em ' + falta.join(', '));
         });
-        return prob.length ? res('aberto', prob.join(' | '), 'Ajustar a tabela Histórico conforme a seção 3.7 do manual.')
+        return prob.length ? res('aberto', prob.join(' | '), 'Ajustar a tabela Histórico conforme a seção 3.6 do manual (S20).')
           : res('conforme', 'Colunas, tipos e posição conforme o padrão; editáveis nas ' + titles.length + ' atividades humanas.');
       } },
-    { id: 'AUTO-05', rule: 'F19', sev: 'B', files: '.xls', desc: 'Campo situacaoDoProtocolo antes da tabela Histórico',
+    { id: 'AUTO-05', rule: 'F18', sev: 'B', files: '.xls', desc: 'Campo situacaoDoProtocolo antes da tabela Histórico',
       run: function (P) {
         if (!P.xls) return res('na', 'Export .xls não enviado.');
         var f = P.xls.fields;
@@ -372,7 +369,7 @@
         if (falta.length) prob.push('não habilitado em ' + falta.join(', '));
         return prob.length ? res('aberto', prob.join(' | ')) : res('conforme', 'Texto, antes da tabela Histórico, editável em todas as atividades.');
       } },
-    { id: 'AUTO-06', rule: 'R2', sev: 'B', files: '.xls', desc: 'Tarefa de área atribuída a "Requisitante"',
+    { id: 'AUTO-06', rule: 'R2', sev: 'R', files: '.xls', desc: 'Tarefa de área atribuída a "Requisitante"',
       run: function (P) {
         if (!P.xls) return res('na', 'Export .xls não enviado.');
         var bad = P.xls.tasks.filter(function (t) {
@@ -382,17 +379,17 @@
           'Atribuir o grupo definitivo no padrão Função - Tipo/Subárea (R1).')
           : res('conforme', 'Tarefas de área com grupo próprio.');
       } },
-    { id: 'AUTO-07', rule: '1.4', sev: 'B', mode: 'aviso', files: '.svg / .json', desc: 'Marco final "Abrir e Fechar Encerrado" em todos os caminhos',
+    { id: 'AUTO-07', rule: 'M4', sev: 'B', files: '.svg / .json', desc: 'Marco final "Abrir e Fechar Encerrado" em todos os caminhos',
       run: function (P) {
         if (!P.diagram) return res('na', 'Diagrama não enviado.');
         var finais = P.diagram.elements.filter(function (e) { return /^abrir e fechar\s/i.test(e.name) && !/protocolo aberto/i.test(e.name); });
         var errados = finais.filter(function (e) { return !/encerrado$/i.test(key(e.name)); });
         if (!finais.length) return res('aberto', 'Nenhum marco "Abrir e Fechar Encerrado" encontrado.', 'Fechar todos os caminhos com "Abrir e Fechar Encerrado" antes do evento de fim.');
-        return errados.length ? res('aberto', errados.length + ' marco(s) final(is): ' + uniq(errados.map(function (e) { return '"' + e.name + '"'; })).join(', ') + '. Seção 1.4 do manual em validação no CoE.',
-          'O resultado fica no evento de fim; o marco final é sempre "Abrir e Fechar Encerrado".')
+        return errados.length ? res('aberto', errados.length + ' marco(s) final(is): ' + uniq(errados.map(function (e) { return '"' + e.name + '"'; })).join(', ') + '.',
+          'O marco final é sempre "Abrir e Fechar Encerrado" (M4); o resultado fica no evento de fim: Fim - Concluído ou Fim - Cancelado (M5).')
           : res('conforme', finais.length + ' marco(s) final(is) "Abrir e Fechar Encerrado".');
       } },
-    { id: 'AUTO-08', rule: '1.3', sev: 'B', files: '.xls / .svg', desc: 'Nome do temporizador "<n> <unidade> <corridos/úteis>"',
+    { id: 'AUTO-08', rule: 'N8', sev: 'R', files: '.xls / .svg', desc: 'Nome do temporizador "<n> <unidade> <corridos/úteis>"',
       run: function (P) {
         var nomes = [];
         if (P.xls) P.xls.timers.forEach(function (t) { nomes.push(t.title); });
@@ -404,7 +401,7 @@
         return bad.length ? res('aberto', 'Fora do padrão: ' + bad.join(', '), 'Ex.: "30 dias corridos", "5 horas úteis".')
           : res('conforme', 'Nomes no padrão: ' + nomes.join(', ') + '.');
       } },
-    { id: 'AUTO-09', rule: 'E9', sev: 'B', files: '.xls', desc: 'Título dos e-mails personalizados: Protocolo - Fluxo - Informativo',
+    { id: 'AUTO-09', rule: 'E9', sev: 'R', files: '.xls', desc: 'Título dos e-mails personalizados: Protocolo - Fluxo - Informativo',
       run: function (P) {
         if (!P.xls) return res('na', 'Export .xls não enviado.');
         if (!P.xls.messages.length) return res('na', 'Nenhum evento de e-mail.');
@@ -435,7 +432,7 @@
         return res('aberto', 'Sem SLA: ' + sem.map(function (t) { return t.title; }).join(', ') + (temSlaDin ? ' (há anotação de SLA dinâmico; confira a qual atividade se refere)' : ''),
           'Definir as horas da atividade ou anotar o SLA dinâmico com a regra de origem (R6).');
       } },
-    { id: 'AUTO-10', rule: 'S12', sev: 'B', files: '.css', desc: 'CSS do formulário com o bloco padrão do manual',
+    { id: 'AUTO-10', rule: 'S12', sev: 'R', files: '.css', desc: 'CSS do formulário com o bloco padrão do manual',
       run: function (P) {
         if (!P.css.length) return res('na', 'Nenhum CSS enviado.');
         var ok = P.css.filter(function (c) {
@@ -443,7 +440,7 @@
           return CSS_MARKERS.every(function (m) { return t.indexOf(m) >= 0; });
         });
         return ok.length ? res('conforme', 'Bloco padrão encontrado em ' + ok.map(function (c) { return c.name; }).join(', ') + '. Confira se está em todas as atividades.')
-          : res('aberto', 'Bloco padrão da seção 3.5 não encontrado nos CSS enviados.', 'Colar o CSS padrão sem alteração em todas as atividades.');
+          : res('aberto', 'Bloco padrão da seção 3.4 não encontrado nos CSS enviados.', 'Colar o CSS padrão sem alteração em todas as atividades.');
       } },
     { id: 'AUTO-11', rule: 'F1', sev: 'B', files: '.xls', desc: 'Identificadores em camelCase, sem acento',
       run: function (P) {
@@ -468,6 +465,11 @@
       } }
   ];
   function uniq(a) { return a.filter(function (x, i) { return a.indexOf(x) === i; }); }
+  function cmpVersao(a, b) {
+    var x = String(a).split('.'), y = String(b).split('.');
+    for (var i = 0; i < Math.max(x.length, y.length); i++) { var d = (parseInt(x[i], 10) || 0) - (parseInt(y[i], 10) || 0); if (d) return d > 0 ? 1 : -1; }
+    return 0;
+  }
 
   /* ----------------------------- leitura geral ----------------------------- */
   // files: [{ name, text }] ; info: { processName }
@@ -592,6 +594,18 @@
   var AI_STATUS = { conforme: 'conforme', nao_conforme: 'aberto', 'não_conforme': 'aberto', inconclusivo: 'verificar', nao_aplicavel: 'na', 'não_aplicável': 'na' };
 
   /* ------------------------------ resultado ------------------------------ */
+  // Conferencias automaticas seguem o manual vigente: some a conferencia cuja regra saiu do manual
+  // e a severidade passa a ser a da regra no manual.
+  function alignChecks(autoItems, rules) {
+    if (!rules || !rules.length) return autoItems;
+    var rm = {}; rules.forEach(function (r) { rm[r.code] = r; });
+    return autoItems.filter(function (a) { return rm[a.rule]; }).map(function (a) { return Object.assign({}, a, { sev: rm[a.rule].sev, regraTexto: rm[a.rule].text }); });
+  }
+  // Regras que vao para a IA: "ia", e "auto" sem conferencia automatica que a cubra
+  function iaRules(rules, autoItems) {
+    var cob = {}; (autoItems || []).forEach(function (a) { cob[a.rule] = 1; });
+    return (rules || []).filter(function (r) { return (r.aval === 'ia' || r.aval === 'auto') && !cob[r.code]; });
+  }
   // rules: regras do manual vigente [{code, text, sev, aval: auto|ia|checklist|nao}]
   // opts.iaBloqueia === false: nao conformidade da IA fica "A verificar" (nao bloqueia sozinha)
   function buildItems(autoItems, rules, aiAnswer, opts) {
@@ -604,7 +618,7 @@
     rules.forEach(function (r) {
       if (r.aval === 'checklist') {
         items.push({ id: r.code, rule: r.code, item: r.text, origin: 'Checklist', sev: r.sev, status: 'confirmar', comment: 'Confirme que está configurado ou anexe o print.', fix: '' });
-      } else if (r.aval === 'ia' && !autoRules[r.code]) {
+      } else if ((r.aval === 'ia' || r.aval === 'auto') && !autoRules[r.code]) {
         var a = aiMap[r.code];
         if (aiAnswer) {
           var stt = a ? (AI_STATUS[key(a.status).replace(/\s/g, '_')] || 'verificar') : 'verificar';
@@ -639,12 +653,13 @@
   // Padrao inicial de como cada regra e avaliada; o CoE ajusta na tela de revisao.
   //  auto: confere por codigo | checklist: o analista confirma ou anexa print |
   //  nao: visual ou etapa do proprio CoE, fora da autoavaliacao | demais: IA
+  // Codigos do manual v1.5 (C, N e M novos; F18/F20 no lugar de F19/F21).
   var DEFAULT_AVAL = {
-    auto: ['S4', 'S2', 'S19', 'F21', 'F19', 'R2', 'R3', 'E9', 'E1', 'R5', 'S12', 'F1', 'F12', 'S20'],
-    checklist: ['F16', 'F17', 'F18', 'E4', 'R6', 'R15', 'R16', 'R17', 'S18', 'V3', 'V4', 'V7', 'V8', 'V9', 'V10', 'V11', 'V12',
-      'V15', 'V16', 'V17', 'V18', 'V19', 'V20'],
-    nao: ['P1', 'P5', 'P7', 'R1', 'R4', 'R7', 'R8', 'R11', 'R12', 'R13', 'R14', 'I2', 'I4', 'I6', 'I10', 'I12', 'I13',
-      'S11', 'E6', 'V1', 'V5', 'V6', 'V13', 'V14']
+    auto: ['S4', 'S2', 'S19', 'F20', 'F18', 'R2', 'E9', 'E1', 'R5', 'S12', 'F1', 'F12', 'M4', 'N8'],
+    checklist: ['F16', 'F17', 'E4', 'R6', 'R15', 'R16', 'S18', 'M8', 'M10', 'M18', 'V3', 'V4', 'V7', 'V8', 'V9', 'V10', 'V11', 'V12',
+      'V15', 'V16', 'V17', 'V18', 'V19', 'V20', 'V21'],
+    nao: ['P1', 'P5', 'P7', 'C1', 'C2', 'C3', 'R1', 'R3', 'R4', 'R7', 'R11', 'I4', 'I10', 'I12', 'I13',
+      'E6', 'V1', 'V5', 'V6', 'V13', 'V14']
   };
   function defaultAval(code) {
     if (DEFAULT_AVAL.auto.indexOf(code) >= 0) return 'auto';
@@ -655,7 +670,7 @@
   function parseManualHtml(html) {
     var doc = new root.DOMParser().parseFromString('<div id="r">' + html + '</div>', 'text/html');
     var rootEl = doc.getElementById ? doc.getElementById('r') : doc.documentElement;
-    var rules = [], seen = {}, section = '', chapter = '', counter = {}, sectionTitle = '';
+    var rules = [], seen = {}, section = '', chapter = '', counter = {}, sectionTitle = '', sub = '';
     function add(code, text, sev) {
       text = norm(text);
       if (!text || seen[code]) return;
@@ -679,23 +694,31 @@
           if (sev !== 'B' && sev !== 'R') { if (!cab) cab = cells.map(norm); return; }
           var first = norm(cells[0]);
           var isCode = /^[A-Z]{1,2}\d{1,3}$/.test(first);
+          // v1.5: "N1 · Atividade humana" (codigo + nome do elemento na mesma celula)
+          var mPre = !isCode && /^([A-Z]{1,2}\d{1,3})\s*[·•\-–—:]\s*(.+)$/.exec(first);
           var ini = isCode ? 1 : 0;
           var partes = [];
           cells.slice(ini, cells.length - 1).forEach(function (c, j) {
             c = norm(c); if (!c) return;
+            if (mPre && j === 0) c = mPre[2];
             var rot = cab && cab.length === cells.length ? cab[ini + j] : '';
             // rotulo da coluna, exceto quando e o proprio texto da regra
             partes.push(rot && !/^(regra|descri[cç][aã]o|crit[eé]rio|requisito)$/i.test(rot) ? rot + ': ' + c : c);
           });
-          add(isCode ? first : autoCode(), partes.join(' — '), sev);
+          add(isCode ? first : mPre ? mPre[1] : autoCode(), partes.join(' — '), sev);
         });
         return;
       }
       var txt = norm(textOf(el));
       var mSec = /^(\d+)\.(\d+)\s+\S/.exec(txt);
       var mCap = /^(\d+)\.\s+\S/.exec(txt);
-      if (mSec && txt.length < 90) { section = mSec[1] + '.' + mSec[2]; chapter = mSec[1]; sectionTitle = txt; return; }
-      if (mCap && txt.length < 60) { chapter = mCap[1]; section = ''; sectionTitle = txt; return; }
+      if (mSec && txt.length < 90) { section = mSec[1] + '.' + mSec[2]; chapter = mSec[1]; sectionTitle = txt; sub = ''; return; }
+      if (mCap && txt.length < 60) { chapter = mCap[1]; section = ''; sectionTitle = txt; sub = ''; return; }
+      // v1.5: "M1 (B) texto" (codigo antes da severidade)
+      var mC = /^([A-Z]{1,2}\d{1,3})\s*\(\s*(B|R)\s*\)\s*(.+)$/.exec(txt);
+      if (mC && section) { add(mC[1], (sub ? sub + ': ' : '') + mC[3], mC[2]); return; }
+      // subtitulo curto dentro da secao (ex.: "Temporizadores", "Anotações") da contexto as regras seguintes
+      if (txt.length < 60 && !/[.:;]$/.test(txt) && localName(el).toLowerCase() !== 'li') sub = txt;
       var mR = /^\(\s*(B|R)\s*\)\s*(.+)$/.exec(txt);
       if (mR && section && !/checklist/i.test(sectionTitle)) add(autoCode(), mR[2], mR[1]);
     });
@@ -737,7 +760,7 @@
     parseFiles: parseFiles, summary: summary, runChecks: runChecks, CHECKS: CHECKS.map(function (c) {
       return { id: c.id, rule: c.rule, sev: c.sev, files: c.files, desc: c.desc, params: c.params || {} };
     }),
-    aiPrompt: aiPrompt, parseAiAnswer: parseAiAnswer, buildItems: buildItems, totals: totals, mask: mask,
+    aiPrompt: aiPrompt, parseAiAnswer: parseAiAnswer, buildItems: buildItems, alignChecks: alignChecks, iaRules: iaRules, totals: totals, mask: mask,
     TIPOS_PT: TIPOS_PT, parseManualHtml: parseManualHtml, diffRules: diffRules, defaultAval: defaultAval, key: key, norm: norm,
     _internal: { nonAsciiOutsideComments: nonAsciiOutsideComments, parseZeevXls: parseZeevXls, parseSvg: parseSvg }
   };
