@@ -35,20 +35,34 @@ const CONFIG_PADRAO = {
 };
 
 // Decisoes do CoE enviadas a IA em toda analise (o CoE edita em Orientacoes a IA)
+// Orientacoes iniciais do CoE, com os codigos do Manual de Padroes Zeev v1.5.
+// [id, regras, texto, ativa]. Ids novos quando o texto ou os codigos mudam, para substituir a copia salva.
 const ORIENTACOES_PADRAO = [
-  ['', 'Cores dos eventos de início (verde) e fim (vinho) e dos marcos (cinza) são o padrão do tema da Zeev: não aponte cor desses elementos.'],
-  ['R2, R3, 1.4', 'Responsável "Requisitante" em atividade de área é permitido em homologação (já conferido pela conferência automática AUTO-06): não aponte como não conformidade. O CoE sinaliza a troca antes da publicação.'],
-  ['1.3', 'A nomenclatura de atividade humana (ÁREA - Verbo + complemento) vale só para atividades humanas (retângulo com borda azul, listadas em tarefasHumanas). Evento de início, eventos de fim, marcos, gateways e temporizadores não seguem essa regra.'],
-  ['1.4', 'A atividade "Avaliar atendimento" (pesquisa de satisfação) é exceção aceita pelo CoE na seção 1.4: não aponte.'],
-  ['1.4', 'A regra do marco final "Abrir e Fechar Encerrado" está em validação no CoE: não marque como não conforme; use inconclusivo e descreva o ponto.'],
-  ['S17', 'O export da Zeev não mostra a ordem de exibição das opções de lista. Com o script padrão em uso, considere conforme; na dúvida, inconclusivo, nunca não conforme.'],
-  ['', 'O export da Zeev não traz o tempo dos temporizadores nem os destinatários dos e-mails. Ausência desses dados no contexto não é não conformidade: use inconclusivo.'],
-  ['3.7', 'Botões nativos "Enviar solicitação" (abertura) e "Concluir" são válidos para o histórico.'],
-  ['R5, R6', 'Por regra de negócio o SLA é em horas corridas; "horas úteis" desligado não é não conformidade.'],
-  ['3.6', 'O modelo administrativo da pesquisa de satisfação (seção 3.6) é padrão do CoE: seus campos, script e textos não devem ser apontados.'],
-  ['1.3, P2', 'O pool com o nome do processo envolvendo todas as raias é aceito pelo CoE. Ele não é raia nem papel: não aplique a ele as regras de nomenclatura de raia.'],
-  ['1.3', 'Gateway: o "?" só é exigido quando a decisão é uma pergunta de Sim/Não (ex.: "Solicitação aprovada?"). Gateway cujo campo é uma lista de ações ou opções (ex.: "Ação do atendimento", com opções "Devolver para o solicitante, Encerrar") não é pergunta e fica sem "?": está conforme. Use a lista gateways do contexto para ver o campo e as opções.']
-].map((o, i) => ({ id: 'o' + (i + 1), regras: o[0], texto: o[1], ativa: true, origem: 'Decisão inicial do CoE', em: '' }));
+  ['o1', '', 'Cores dos eventos de início (verde) e fim (vinho) e dos marcos (cinza) são o padrão do tema da Zeev: não aponte cor desses elementos.'],
+  ['v15-2', 'R2, R3', 'Responsável "Requisitante" em atividade de área é permitido em homologação (já conferido pela conferência automática AUTO-06): não aponte como não conformidade. O CoE sinaliza a troca antes da publicação (R3).'],
+  ['v15-3', 'N1', 'A nomenclatura de atividade humana (ÁREA - Nome da atividade) vale só para atividades humanas (retângulo com borda azul, listadas em tarefasHumanas). Evento de início, eventos de fim, marcos, gateways e temporizadores têm regras próprias (N5 a N13).'],
+  ['v15-4', 'M5, M9, M10', 'A atividade "SOLICITANTE - Avaliar atendimento" (pesquisa de satisfação) tem exceção prevista no manual: o temporizador leva a Fim - Concluído (M9), o prazo é de 30 dias corridos (M10) e o atendimento conta como concluído com ou sem a avaliação (M5). Não aponte essa diferença como não conformidade.'],
+  ['o6', 'S17', 'O export da Zeev não mostra a ordem de exibição das opções de lista. Com o script padrão em uso, considere conforme; na dúvida, inconclusivo, nunca não conforme.'],
+  ['o7', '', 'O export da Zeev não traz o tempo dos temporizadores nem os destinatários dos e-mails. Ausência desses dados no contexto não é não conformidade: use inconclusivo.'],
+  ['v15-8', 'S19, F15', 'Botões nativos "Enviar solicitação" (abertura) e "Concluir" (demais atividades) são válidos para o histórico (CONFIG.botoes).'],
+  ['v15-9', 'R5, R6, R16', 'Por regra de negócio o SLA é em horas corridas; "horas úteis" desligado não é não conformidade.', false],
+  ['v15-10', 'S16, S17, S18, S23', 'O modelo administrativo da pesquisa de satisfação (seção 3.5) é padrão do CoE: seus campos, script e textos não devem ser apontados.'],
+  ['v15-11', 'P2', 'O pool com o nome do processo envolvendo todas as raias é aceito pelo CoE. Ele não é raia nem papel: não aplique a ele as regras de nomenclatura de raia.'],
+  ['v15-12', 'N5, N6', 'Gateway: o "?" só é exigido quando a decisão é uma pergunta de Sim/Não (ex.: "Solicitação aprovada?"). Gateway cujo campo é uma lista de ações ou opções (ex.: "Ação do atendimento", com opções "Devolver para o solicitante, Encerrar") não é pergunta e fica sem "?": está conforme. Use a lista gateways do contexto para ver o campo e as opções.']
+].map((o) => ({ id: o[0], regras: o[1], texto: o[2], ativa: o[3] !== false, origem: 'Decisão inicial do CoE', em: '' }));
+// Orientacoes iniciais da v1.4 que foram substituidas (ou retiradas, como a do marco final "em validação").
+// A copia salva sai da lista quando o CoE nao a editou; se editou, fica como esta.
+const ORIENTACOES_SUBSTITUIDAS = {
+  o2: 'Responsável "Requisitante" em atividade de área é permitido em homologação (já conferido pela conferência automática AUTO-06): não aponte como não conformidade. O CoE sinaliza a troca antes da publicação.',
+  o3: 'A nomenclatura de atividade humana (ÁREA - Verbo + complemento) vale só para atividades humanas (retângulo com borda azul, listadas em tarefasHumanas). Evento de início, eventos de fim, marcos, gateways e temporizadores não seguem essa regra.',
+  o4: 'A atividade "Avaliar atendimento" (pesquisa de satisfação) é exceção aceita pelo CoE na seção 1.4: não aponte.',
+  o5: 'A regra do marco final "Abrir e Fechar Encerrado" está em validação no CoE: não marque como não conforme; use inconclusivo e descreva o ponto.',
+  o8: 'Botões nativos "Enviar solicitação" (abertura) e "Concluir" são válidos para o histórico.',
+  o9: 'Por regra de negócio o SLA é em horas corridas; "horas úteis" desligado não é não conformidade.',
+  o10: 'O modelo administrativo da pesquisa de satisfação (seção 3.6) é padrão do CoE: seus campos, script e textos não devem ser apontados.',
+  o11: 'O pool com o nome do processo envolvendo todas as raias é aceito pelo CoE. Ele não é raia nem papel: não aplique a ele as regras de nomenclatura de raia.',
+  o12: 'Gateway: o "?" só é exigido quando a decisão é uma pergunta de Sim/Não (ex.: "Solicitação aprovada?"). Gateway cujo campo é uma lista de ações ou opções (ex.: "Ação do atendimento", com opções "Devolver para o solicitante, Encerrar") não é pergunta e fica sem "?": está conforme. Use a lista gateways do contexto para ver o campo e as opções.'
+};
 
 // Colunas acrescentadas depois da primeira versao do banco (criadas sozinhas na primeira chamada)
 const COLUNAS_NOVAS = [['coe_status', "TEXT DEFAULT 'rascunho'"], ['submitted_at', 'TEXT'], ['reviewed_at', 'TEXT'], ['reviewer_id', 'INTEGER'], ['coe_opinion', 'TEXT'],
@@ -442,9 +456,11 @@ rota('POST', '/api/manual', 'admin', async (c) => {
 // ---- orientacoes do CoE para a IA ----
 // Orientacoes padrao novas entram sozinhas na lista salva, exceto as que o CoE excluiu
 async function lerOrientacoes(env) {
-  const o = await lerConfig(env, 'orientacoes');
+  let o = await lerConfig(env, 'orientacoes');
   if (!Array.isArray(o)) return ORIENTACOES_PADRAO;
   const removidas = (await lerConfig(env, 'orientacoes_removidas')) || [];
+  // tira as copias das orientacoes iniciais da v1.4 que o CoE nao editou (foram substituidas pelas da v1.5)
+  o = o.filter((x) => !(ORIENTACOES_SUBSTITUIDAS[x.id] && String(x.texto || '').trim() === ORIENTACOES_SUBSTITUIDAS[x.id]));
   const ids = new Set(o.map((x) => x.id));
   return o.concat(ORIENTACOES_PADRAO.filter((x) => !ids.has(x.id) && !removidas.includes(x.id)));
 }
